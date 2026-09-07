@@ -61,6 +61,39 @@ bool TilesetDoc::is_specialty(int col, int row) {
     return col >= 3;
 }
 
+Cell TilesetDoc::specialty_context_cell(Cell specialty, int gx, int gy) {
+    if (gx < 0 || gy < 0 || gx >= 3 || gy >= 3) {
+        return {-1, -1};
+    }
+    if (gx == 1 && gy == 1) {
+        return specialty;
+    }
+
+    if (specialty == kInnerCorner) {
+        if (gx == 1 && gy == 0) return {1, 0};
+        if (gx == 1 && gy == 2) return {1, 2};
+        if (gx == 0 && gy == 1) return {0, 1};
+        if (gx == 2 && gy == 1) return {2, 1};
+        return {-1, -1};
+    } else if (specialty == kPillarTop) {
+        if (gx == 1 && gy == 2) return kPillarBottom;
+        return {-1, -1};
+    } else if (specialty == kPillarBottom) {
+        if (gx == 1 && gy == 0) return kPillarTop;
+        return {-1, -1};
+    } else if (specialty == kPlatformLeft) {
+        if (gx == 2 && gy == 1) return kPlatformRight;
+        return {-1, -1};
+    } else if (specialty == kPlatformRight) {
+        if (gx == 0 && gy == 1) return kPlatformLeft;
+        return {-1, -1};
+    } else if (specialty == kIsolated) {
+        return {-1, -1};
+    }
+
+    return {-1, -1};
+}
+
 std::vector<Rgb> TilesetDoc::default_palette() {
     std::vector<Rgb> colors(kPaletteSize);
     for (int i = 0; i < kPaletteSize; ++i) {

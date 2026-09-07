@@ -472,6 +472,78 @@ void test_corner_context_preview() {
     }
 }
 
+void test_specialty_context_cell() {
+    using namespace tsm;
+
+    // Center is always specialty
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 1, 1) == TilesetDoc::kInnerCorner,
+           "specialty center must be inner corner");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kPillarTop, 1, 1) == TilesetDoc::kPillarTop,
+           "specialty center must be pillar top");
+
+    // Inner Corner (4, 0): N, S, E, W are the edge tiles
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 1, 0) == Cell{1, 0},
+           "inner corner N should be top edge (1,0)");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 1, 2) == Cell{1, 2},
+           "inner corner S should be bottom edge (1,2)");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 0, 1) == Cell{0, 1},
+           "inner corner W should be left edge (0,1)");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 2, 1) == Cell{2, 1},
+           "inner corner E should be right edge (2,1)");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 0, 0) == Cell{-1, -1},
+           "inner corner NW should be empty");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 2, 0) == Cell{-1, -1},
+           "inner corner NE should be empty");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 0, 2) == Cell{-1, -1},
+           "inner corner SW should be empty");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 2, 2) == Cell{-1, -1},
+           "inner corner SE should be empty");
+
+    // Pillar Top (3, 0): S is Pillar Bottom (3, 1)
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kPillarTop, 1, 2) == TilesetDoc::kPillarBottom,
+           "pillar top S should be pillar bottom");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kPillarTop, 1, 0) == Cell{-1, -1},
+           "pillar top N should be empty");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kPillarTop, 0, 1) == Cell{-1, -1},
+           "pillar top W should be empty");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kPillarTop, 2, 1) == Cell{-1, -1},
+           "pillar top E should be empty");
+
+    // Pillar Bottom (3, 1): N is Pillar Top (3, 0)
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kPillarBottom, 1, 0) == TilesetDoc::kPillarTop,
+           "pillar bottom N should be pillar top");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kPillarBottom, 1, 2) == Cell{-1, -1},
+           "pillar bottom S should be empty");
+
+    // Platform Left (3, 2): E is Platform Right (4, 2)
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kPlatformLeft, 2, 1) == TilesetDoc::kPlatformRight,
+           "platform left E should be platform right");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kPlatformLeft, 0, 1) == Cell{-1, -1},
+           "platform left W should be empty");
+
+    // Platform Right (4, 2): W is Platform Left (3, 2)
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kPlatformRight, 0, 1) == TilesetDoc::kPlatformLeft,
+           "platform right W should be platform left");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kPlatformRight, 2, 1) == Cell{-1, -1},
+           "platform right E should be empty");
+
+    // Isolated (4, 1): all 4 directions are empty
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kIsolated, 1, 0) == Cell{-1, -1},
+           "isolated N should be empty");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kIsolated, 1, 2) == Cell{-1, -1},
+           "isolated S should be empty");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kIsolated, 0, 1) == Cell{-1, -1},
+           "isolated W should be empty");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kIsolated, 2, 1) == Cell{-1, -1},
+           "isolated E should be empty");
+
+    // Out of bounds
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, -1, 0) == Cell{-1, -1},
+           "out of bounds x should be empty");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 0, 3) == Cell{-1, -1},
+           "out of bounds y should be empty");
+}
+
 } // namespace
 
 int main() {
@@ -482,6 +554,7 @@ int main() {
     test_settings_file();
     test_project_file();
     test_corner_context_preview();
+    test_specialty_context_cell();
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";
         return 1;

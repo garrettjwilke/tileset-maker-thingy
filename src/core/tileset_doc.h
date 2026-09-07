@@ -46,6 +46,7 @@ public:
     static bool is_mirror_pair_right(int col, int row);
     static bool is_mirror_pair_left(int col, int row);
     static bool is_specialty(int col, int row);
+    static Cell specialty_context_cell(Cell specialty, int gx, int gy);
     static std::vector<Rgb> default_palette();
 
     std::string cell_name(int col, int row) const;

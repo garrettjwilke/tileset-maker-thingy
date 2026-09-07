@@ -240,8 +240,8 @@ struct Editor {
         case Step::Specialty:
             edit_ox = specialty.x;
             edit_oy = specialty.y;
-            edit_cols = 1;
-            edit_rows = 1;
+            edit_cols = 3;
+            edit_rows = 3;
             preview_sel = specialty;
             break;
         case Step::Variants:
@@ -306,7 +306,12 @@ struct Editor {
         if (ts <= 0) {
             return {-1, -1};
         }
-        return {edit_ox + src.x / ts, edit_oy + src.y / ts};
+        const int gx = src.x / ts;
+        const int gy = src.y / ts;
+        if (step == Step::Specialty) {
+            return TilesetDoc::specialty_context_cell(specialty, gx, gy);
+        }
+        return {edit_ox + gx, edit_oy + gy};
     }
     Cell src_local(Cell src) const {
         const int ts = tile_size();
@@ -576,22 +581,40 @@ ImU32 grid_color() {
 }
 
 void draw_pixels(ImDrawList* dl, ImVec2 origin, int zoom, int w, int h, const Editor& ed, int ox, int oy, int cols,
-                 int rows, bool atlas, ImU32 grid_col, float grid_thickness = 1.0f, bool pixel_grid = false) {
+                 int rows, bool atlas, ImU32 grid_col, float grid_thickness = 1.0f, bool pixel_grid = false,
+                 bool canvas_mode = false) {
     const int ts = atlas ? ed.atlas.tile_size : ed.doc.tile_size;
     if (ts <= 0 || zoom <= 0) {
         return;
     }
+    const ImU32 bg_a = g_settings.dark ? IM_COL32(31, 33, 41, 255) : IM_COL32(235, 237, 240, 255);
+    const ImU32 bg_b = g_settings.dark ? IM_COL32(20, 23, 28, 255) : IM_COL32(215, 218, 222, 255);
+
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
-            const int col = ox + x / ts;
-            const int row = oy + y / ts;
-            const int lx = x % ts;
-            const int ly = y % ts;
-            const int idx = atlas ? ed.atlas.get_pixel(col, row, lx, ly) : ed.doc.get_pixel(col, row, lx, ly);
-            const Rgb c = atlas ? ed.atlas.color_at(idx) : ed.doc.color_at(idx);
             const ImVec2 p0(origin.x + static_cast<float>(x * zoom), origin.y + static_cast<float>(y * zoom));
             const ImVec2 p1(p0.x + static_cast<float>(zoom), p0.y + static_cast<float>(zoom));
-            dl->AddRectFilled(p0, p1, im_color(c));
+
+            if (canvas_mode && !atlas && ed.step == Step::Specialty) {
+                const Cell cell = ed.src_to_cell(Cell{x, y});
+                if (cell.x < 0 || cell.y < 0) {
+                    const bool checker = (((x / 4) + (y / 4)) % 2 == 0);
+                    dl->AddRectFilled(p0, p1, checker ? bg_a : bg_b);
+                    continue;
+                }
+                const Cell loc = ed.src_local(Cell{x, y});
+                const int idx = ed.doc.get_pixel(cell.x, cell.y, loc.x, loc.y);
+                const Rgb c = ed.doc.color_at(idx);
+                dl->AddRectFilled(p0, p1, im_color(c));
+            } else {
+                const int col = ox + x / ts;
+                const int row = oy + y / ts;
+                const int lx = x % ts;
+                const int ly = y % ts;
+                const int idx = atlas ? ed.atlas.get_pixel(col, row, lx, ly) : ed.doc.get_pixel(col, row, lx, ly);
+                const Rgb c = atlas ? ed.atlas.color_at(idx) : ed.doc.color_at(idx);
+                dl->AddRectFilled(p0, p1, im_color(c));
+            }
         }
     }
     const float drawn_w = static_cast<float>(w * zoom);
@@ -621,6 +644,24 @@ void draw_pixels(ImDrawList* dl, ImVec2 origin, int zoom, int w, int h, const Ed
         const float x = origin.x + static_cast<float>(col * ts * zoom);
         dl->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + drawn_h), grid_col, grid_thickness);
     }
+
+    // In Step 3 canvas mode: highlight the center tile being edited
+    if (canvas_mode && !atlas && ed.step == Step::Specialty) {
+        const ImVec2 c0(origin.x + static_cast<float>(ts * zoom), origin.y + static_cast<float>(ts * zoom));
+        const ImVec2 c1(c0.x + static_cast<float>(ts * zoom), c0.y + static_cast<float>(ts * zoom));
+        dl->AddRect(c0, c1, IM_COL32(255, 220, 60, 220), 0.0f, 0, 2.0f);
+
+        // If editing inner corner, show subtle quadrant cutouts inside center tile
+        if (ed.specialty == TilesetDoc::kInnerCorner) {
+            const float half_px = static_cast<float>((ts / 2) * zoom);
+            const float tile_px = static_cast<float>(ts * zoom);
+            const ImU32 cut_col = IM_COL32(90, 190, 255, 140);
+            dl->AddRect(c0, ImVec2(c0.x + half_px, c0.y + half_px), cut_col, 0.0f, 0, 1.5f);
+            dl->AddRect(ImVec2(c0.x + half_px, c0.y), ImVec2(c0.x + tile_px, c0.y + half_px), cut_col, 0.0f, 0, 1.5f);
+            dl->AddRect(ImVec2(c0.x, c0.y + half_px), ImVec2(c0.x + half_px, c0.y + tile_px), cut_col, 0.0f, 0, 1.5f);
+            dl->AddRect(ImVec2(c0.x + half_px, c0.y + half_px), ImVec2(c0.x + tile_px, c0.y + tile_px), cut_col, 0.0f, 0, 1.5f);
+        }
+    }
 }
 
 void draw_preview_grid(Editor& ed, const char* title, int cols, int rows, bool atlas, int ox = 0, int oy = 0) {
@@ -641,6 +682,7 @@ void draw_preview_grid(Editor& ed, const char* title, int cols, int rows, bool a
                 ed.atlas_cell = {col, row};
             } else if (ed.step == Step::Specialty) {
                 ed.specialty = {col, row};
+                ed.preview_sel = {col, row};
             } else if (ed.step == Step::Edges && col < 3 && row < 3) {
                 ed.preview_sel = {col, row};
             } else if (ed.step == Step::Center) {
@@ -657,80 +699,6 @@ void draw_preview_grid(Editor& ed, const char* title, int cols, int rows, bool a
                                             ImVec2(s0.x + static_cast<float>(ts * z), s0.y + static_cast<float>(ts * z)),
                                             IM_COL32(255, 220, 60, 255), 0, 0, 2.0f);
     }
-}
-
-void draw_corner_context_preview(Editor& ed) {
-    ImGui::TextUnformatted("In-context corner preview");
-    const int ts = ed.doc.tile_size;
-    if (ts <= 0) {
-        return;
-    }
-    const int cols = 4;
-    const int rows = 4;
-    const int total_w = cols * ts;
-    const int total_h = rows * ts;
-    const float avail_w = ImGui::GetContentRegionAvail().x;
-    const int z = std::max(1, static_cast<int>(avail_w / static_cast<float>(std::max(1, total_w))));
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const ImVec2 size(static_cast<float>(total_w * z), static_cast<float>(total_h * z));
-    ImGui::InvisibleButton("corner_preview", size);
-
-    if (ImGui::IsItemClicked()) {
-        ed.specialty = TilesetDoc::kInnerCorner;
-        ed.configure_view();
-    }
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-
-    const ImU32 bg_a = g_settings.dark ? IM_COL32(31, 33, 41, 255) : IM_COL32(235, 237, 240, 255);
-    const ImU32 bg_b = g_settings.dark ? IM_COL32(20, 23, 28, 255) : IM_COL32(215, 218, 222, 255);
-
-    // Render 4x4 pixels
-    for (int y = 0; y < total_h; ++y) {
-        for (int x = 0; x < total_w; ++x) {
-            bool is_bg = false;
-            const int idx = ed.doc.corner_context_pixel(x, y, &is_bg);
-            const ImVec2 p0(origin.x + static_cast<float>(x * z), origin.y + static_cast<float>(y * z));
-            const ImVec2 p1(p0.x + static_cast<float>(z), p0.y + static_cast<float>(z));
-            if (is_bg) {
-                const bool checker = (((x / 4) + (y / 4)) % 2 == 0);
-                dl->AddRectFilled(p0, p1, checker ? bg_a : bg_b);
-            } else {
-                const Rgb c = ed.doc.color_at(idx);
-                dl->AddRectFilled(p0, p1, im_color(c));
-            }
-        }
-    }
-
-    // Tile grid lines
-    const ImU32 gcol = grid_color();
-    const float drawn_w = static_cast<float>(total_w * z);
-    const float drawn_h = static_cast<float>(total_h * z);
-    for (int r = 0; r <= rows; ++r) {
-        const float py = origin.y + static_cast<float>(r * ts * z);
-        dl->AddLine(ImVec2(origin.x, py), ImVec2(origin.x + drawn_w, py), gcol);
-    }
-    for (int c = 0; c <= cols; ++c) {
-        const float px = origin.x + static_cast<float>(c * ts * z);
-        dl->AddLine(ImVec2(px, origin.y), ImVec2(px, origin.y + drawn_h), gcol);
-    }
-
-    // Subtle indicators outlining the 4 inner corner cutouts
-    const float tile_px = static_cast<float>(ts * z);
-    const float half_px = static_cast<float>((ts / 2) * z);
-    const ImU32 cut_col = IM_COL32(90, 190, 255, 140);
-    // TL corner cut at (1, 1)
-    const ImVec2 tl0(origin.x + 1.0f * tile_px, origin.y + 1.0f * tile_px);
-    dl->AddRect(tl0, ImVec2(tl0.x + half_px, tl0.y + half_px), cut_col, 0.0f, 0, 1.5f);
-    // TR corner cut at (2, 1)
-    const ImVec2 tr0(origin.x + 2.0f * tile_px + half_px, origin.y + 1.0f * tile_px);
-    dl->AddRect(tr0, ImVec2(tr0.x + half_px, tr0.y + half_px), cut_col, 0.0f, 0, 1.5f);
-    // BL corner cut at (1, 2)
-    const ImVec2 bl0(origin.x + 1.0f * tile_px, origin.y + 2.0f * tile_px + half_px);
-    dl->AddRect(bl0, ImVec2(bl0.x + half_px, bl0.y + half_px), cut_col, 0.0f, 0, 1.5f);
-    // BR corner cut at (2, 2)
-    const ImVec2 br0(origin.x + 2.0f * tile_px + half_px, origin.y + 2.0f * tile_px + half_px);
-    dl->AddRect(br0, ImVec2(br0.x + half_px, br0.y + half_px), cut_col, 0.0f, 0, 1.5f);
 }
 
 void copy_selection(Editor& ed) {
@@ -929,7 +897,7 @@ void handle_canvas(Editor& ed) {
             const ImVec2 o(origin.x + static_cast<float>(rx * sw * ed.zoom),
                             origin.y + static_cast<float>(ry * sh * ed.zoom));
             draw_pixels(dl, o, ed.zoom, sw, sh, ed, ed.edit_ox, ed.edit_oy, ed.edit_cols, ed.edit_rows, !ed.art_step(),
-                        canvas_tile_grid_color(), 2.0f, g_settings.pixel_grid);
+                        canvas_tile_grid_color(), 2.0f, g_settings.pixel_grid, /*canvas_mode=*/true);
         }
     }
 
@@ -1240,6 +1208,33 @@ void handle_canvas(Editor& ed) {
 void draw_palette(Editor& ed) {
     const int n = ed.art_step() ? ed.doc.palette_count() : ed.atlas.palette_count();
     ImGui::Text("Palette (%d)", n);
+    if (ed.paint_index >= 0 && ed.paint_index < n) {
+        Rgb c = ed.color(ed.paint_index);
+        float col[3] = {c.r / 255.0f, c.g / 255.0f, c.b / 255.0f};
+        const float picker_w = std::min(ImGui::GetContentRegionAvail().x, 180.0f * g_settings.scale);
+        ImGui::SetNextItemWidth(picker_w);
+        if (ImGui::ColorPicker3("##picker", col,
+                                ImGuiColorEditFlags_PickerHueBar |
+                                ImGuiColorEditFlags_NoSidePreview |
+                                ImGuiColorEditFlags_NoAlpha)) {
+            Rgb next = MdColor::quantize(Rgb{static_cast<uint8_t>(col[0] * 255.0f + 0.5f),
+                                             static_cast<uint8_t>(col[1] * 255.0f + 0.5f),
+                                             static_cast<uint8_t>(col[2] * 255.0f + 0.5f)});
+            if (ed.paint_index == 0) {
+                next = Rgb{0, 0, 0};
+            }
+            if (ImGui::IsItemActivated()) {
+                ed.push_undo();
+            }
+            if (ed.art_step()) {
+                ed.doc.set_palette_color(ed.paint_index, next);
+            } else {
+                ed.atlas.set_palette_color(ed.paint_index, next);
+            }
+            ed.bump_art();
+        }
+        ImGui::Spacing();
+    }
     const float swatch = 22.0f * g_settings.scale;
     for (int i = 0; i < TilesetDoc::kPaletteSize; ++i) {
         if (i % 8 != 0) {
@@ -1265,25 +1260,6 @@ void draw_palette(Editor& ed) {
             ImGui::GetWindowDrawList()->AddRect(p0, p1, grid_color());
         }
         ImGui::PopID();
-    }
-    if (ed.paint_index >= 0 && ed.paint_index < n) {
-        Rgb c = ed.color(ed.paint_index);
-        float col[3] = {c.r / 255.0f, c.g / 255.0f, c.b / 255.0f};
-        if (ImGui::ColorEdit3("Color", col, ImGuiColorEditFlags_Uint8)) {
-            Rgb next = MdColor::quantize(Rgb{static_cast<uint8_t>(col[0] * 255.0f + 0.5f),
-                                             static_cast<uint8_t>(col[1] * 255.0f + 0.5f),
-                                             static_cast<uint8_t>(col[2] * 255.0f + 0.5f)});
-            if (ed.paint_index == 0) {
-                next = Rgb{0, 0, 0};
-            }
-            ed.push_undo();
-            if (ed.art_step()) {
-                ed.doc.set_palette_color(ed.paint_index, next);
-            } else {
-                ed.atlas.set_palette_color(ed.paint_index, next);
-            }
-            ed.bump_art();
-        }
     }
     if (ImGui::BeginCombo("Preset", "Apply preset")) {
         for (const auto& name : PalettePresets::names()) {
@@ -1736,10 +1712,6 @@ void draw_split_layout(Editor& ed) {
             draw_preview_grid(ed, "3x3 preview", 3, 3, false, 0, 0);
         } else {
             draw_preview_grid(ed, "5x3 sheet", TilesetDoc::kCols, TilesetDoc::kRows, false, 0, 0);
-            if (ed.step == Step::Specialty && ed.specialty == TilesetDoc::kInnerCorner) {
-                row_rule();
-                draw_corner_context_preview(ed);
-            }
         }
     } else if (ed.has_atlas) {
         draw_preview_grid(ed, "12x4 atlas", ed.atlas.cols, AtlasDoc::kRows, true, 0, 0);
@@ -2365,7 +2337,7 @@ int run_editor() {
             ImGui::TextWrapped("%s", ed.status.c_str());
             if (ed.art_step()) {
                 if (ed.step == Step::Specialty && ed.specialty == TilesetDoc::kInnerCorner) {
-                    ImGui::TextDisabled("Inner corners (top-right: 4,0) — 4 pieces (TL, TR, BL, BR) for concave/diagonal corners.");
+                    ImGui::TextDisabled("Inner corners (top-right: 4,0) — center tile in 3x3 context. Draw in center and fine-tune edges.");
                 } else {
                     ImGui::TextDisabled("%s", ed.doc.cell_name(ed.preview_sel.x, ed.preview_sel.y).c_str());
                 }
