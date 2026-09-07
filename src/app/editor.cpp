@@ -255,7 +255,7 @@ struct Editor {
 
     int src_w() const { return edit_cols * (art_step() ? doc.tile_size : atlas.tile_size); }
     int src_h() const { return edit_rows * (art_step() ? doc.tile_size : atlas.tile_size); }
-    int reps() const { return (step == Step::Center && tile_mode) ? 3 : 1; }
+    int reps() const { return (step == Step::Center && tile_mode) ? 5 : 1; }
     int tile_size() const { return art_step() ? doc.tile_size : atlas.tile_size; }
 
     int get_px(int col, int row, int x, int y) const {
