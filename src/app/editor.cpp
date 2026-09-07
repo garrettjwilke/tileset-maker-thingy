@@ -2759,19 +2759,6 @@ int run_editor() {
                 }
             }
 
-            row_rule();
-
-            ImGui::TextWrapped("%s", ed.status.c_str());
-            if (ed.art_step()) {
-                if (ed.step == Step::Specialty && ed.specialty == TilesetDoc::kInnerCorner) {
-                    ImGui::TextDisabled("Inner corners (top-right: 4,0) — center tile in 3x3 context. Draw in center and fine-tune edges.");
-                } else {
-                    ImGui::TextDisabled("%s", ed.doc.cell_name(ed.preview_sel.x, ed.preview_sel.y).c_str());
-                }
-            } else {
-                ImGui::TextDisabled("%s — center tile in 3x3 context", ed.atlas.cell_name(ed.atlas_cell.x, ed.atlas_cell.y).c_str());
-            }
-
             draw_split_layout(ed);
             ImGui::End();
         }
