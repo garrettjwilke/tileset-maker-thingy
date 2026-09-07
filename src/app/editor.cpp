@@ -156,6 +156,12 @@ struct Editor {
         palette_anchor = idx;
     }
 
+    float picker_h = 0.0f;
+    float picker_s = 1.0f;
+    float picker_v = 1.0f;
+    Rgb picker_last_rgb{255, 255, 255};
+    bool picker_init = false;
+
     int brush = 1;
     bool tile_mode = true;
     bool export_header = true;
@@ -1430,50 +1436,143 @@ bool shift_selected_palette(Editor& ed, int delta) {
     return true;
 }
 
+void draw_rectangular_color_picker(Editor& ed, int n) {
+    if (ed.paint_index < 0 || ed.paint_index >= n) {
+        return;
+    }
+    const Rgb current_c = ed.color(ed.paint_index);
+    if (!ed.picker_init || current_c != ed.picker_last_rgb) {
+        ed.picker_last_rgb = current_c;
+        ed.picker_init = true;
+        const float r = current_c.r / 255.0f;
+        const float g = current_c.g / 255.0f;
+        const float b = current_c.b / 255.0f;
+        float h, s, v;
+        ImGui::ColorConvertRGBtoHSV(r, g, b, h, s, v);
+        if (s > 0.001f) {
+            ed.picker_h = h;
+        }
+        ed.picker_s = s;
+        ed.picker_v = v;
+    }
+
+    const float avail_w = std::max(60.0f, ImGui::GetContentRegionAvail().x);
+    const float sv_h = 80.0f * g_settings.scale;
+    const float hue_h = 14.0f * g_settings.scale;
+    bool changed = false;
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+    // --- 1. Saturation / Value Rectangle (Fills sidebar width) ---
+    const ImVec2 sv_pos = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##sv_rect", ImVec2(avail_w, sv_h));
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    }
+    if (ImGui::IsItemActivated()) {
+        ed.push_undo();
+    }
+    if (ImGui::IsItemActive()) {
+        const ImVec2 mpos = ImGui::GetIO().MousePos;
+        ed.picker_s = std::clamp((mpos.x - sv_pos.x) / std::max(1.0f, avail_w - 1.0f), 0.0f, 1.0f);
+        ed.picker_v = std::clamp(1.0f - (mpos.y - sv_pos.y) / std::max(1.0f, sv_h - 1.0f), 0.0f, 1.0f);
+        changed = true;
+    }
+
+    // Render SV plane
+    float hr, hg, hb;
+    ImGui::ColorConvertHSVtoRGB(ed.picker_h, 1.0f, 1.0f, hr, hg, hb);
+    const ImU32 hue_col = ImGui::ColorConvertFloat4ToU32(ImVec4(hr, hg, hb, 1.0f));
+    const ImU32 white_col = IM_COL32(255, 255, 255, 255);
+    const ImU32 black_col = IM_COL32(0, 0, 0, 255);
+    const ImVec2 sv_max(sv_pos.x + avail_w, sv_pos.y + sv_h);
+
+    // Layer 1: Left (White) to Right (Hue color)
+    draw_list->AddRectFilledMultiColor(sv_pos, sv_max, white_col, hue_col, hue_col, white_col);
+    // Layer 2: Top (Transparent) to Bottom (Black)
+    draw_list->AddRectFilledMultiColor(sv_pos, sv_max, 0, 0, black_col, black_col);
+    // Border
+    const ImU32 border_col = g_settings.dark ? IM_COL32(70, 74, 82, 255) : IM_COL32(170, 176, 186, 255);
+    draw_list->AddRect(sv_pos, sv_max, border_col, 0.0f, 0, 1.0f);
+
+    // Reticle circle for SV position
+    const ImVec2 marker_pos(sv_pos.x + ed.picker_s * (avail_w - 1.0f),
+                            sv_pos.y + (1.0f - ed.picker_v) * (sv_h - 1.0f));
+    draw_list->AddCircle(marker_pos, 5.0f, IM_COL32(0, 0, 0, 230), 0, 2.0f);
+    draw_list->AddCircle(marker_pos, 4.0f, IM_COL32(255, 255, 255, 255), 0, 1.5f);
+
+    // --- 2. Hue Slider Bar (Horizontal, underneath, fills sidebar width) ---
+    const ImVec2 hue_pos = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##hue_bar", ImVec2(avail_w, hue_h));
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    }
+    if (ImGui::IsItemActivated()) {
+        ed.push_undo();
+    }
+    if (ImGui::IsItemActive()) {
+        const ImVec2 mpos = ImGui::GetIO().MousePos;
+        ed.picker_h = std::clamp((mpos.x - hue_pos.x) / std::max(1.0f, avail_w - 1.0f), 0.0f, 1.0f);
+        changed = true;
+    }
+
+    // Render Hue rainbow gradient
+    static const ImU32 col_hues[7] = {
+        IM_COL32(255, 0, 0, 255),
+        IM_COL32(255, 255, 0, 255),
+        IM_COL32(0, 255, 0, 255),
+        IM_COL32(0, 255, 255, 255),
+        IM_COL32(0, 0, 255, 255),
+        IM_COL32(255, 0, 255, 255),
+        IM_COL32(255, 0, 0, 255)
+    };
+    const float step_w = avail_w / 6.0f;
+    for (int i = 0; i < 6; ++i) {
+        const ImVec2 p0(hue_pos.x + static_cast<float>(i) * step_w, hue_pos.y);
+        const ImVec2 p1(hue_pos.x + static_cast<float>(i + 1) * step_w, hue_pos.y + hue_h);
+        draw_list->AddRectFilledMultiColor(p0, p1, col_hues[i], col_hues[i + 1], col_hues[i + 1], col_hues[i]);
+    }
+    draw_list->AddRect(hue_pos, ImVec2(hue_pos.x + avail_w, hue_pos.y + hue_h), border_col, 0.0f, 0, 1.0f);
+
+    // Hue indicator needle
+    const float hx = hue_pos.x + ed.picker_h * (avail_w - 1.0f);
+    draw_list->AddRectFilled(ImVec2(hx - 2.5f, hue_pos.y - 1.0f), ImVec2(hx + 2.5f, hue_pos.y + hue_h + 1.0f), IM_COL32(0, 0, 0, 230), 1.0f);
+    draw_list->AddRectFilled(ImVec2(hx - 1.0f, hue_pos.y), ImVec2(hx + 1.0f, hue_pos.y + hue_h), IM_COL32(255, 255, 255, 255), 1.0f);
+
+    if (changed) {
+        float nr, ng, nb;
+        ImGui::ColorConvertHSVtoRGB(ed.picker_h, ed.picker_s, ed.picker_v, nr, ng, nb);
+        Rgb next = MdColor::quantize(Rgb{static_cast<uint8_t>(nr * 255.0f + 0.5f),
+                                         static_cast<uint8_t>(ng * 255.0f + 0.5f),
+                                         static_cast<uint8_t>(nb * 255.0f + 0.5f)});
+        if (ed.paint_index == 0) {
+            next = Rgb{0, 0, 0};
+        }
+        ed.picker_last_rgb = next;
+        for (int i = 1; i < n; ++i) {
+            if (ed.is_palette_selected(i)) {
+                if (ed.art_step()) {
+                    ed.doc.set_palette_color(i, next);
+                } else {
+                    ed.atlas.set_palette_color(i, next);
+                }
+            }
+        }
+        if (ed.paint_index == 0) {
+            if (ed.art_step()) {
+                ed.doc.set_palette_color(0, Rgb{0, 0, 0});
+            } else {
+                ed.atlas.set_palette_color(0, Rgb{0, 0, 0});
+            }
+        }
+        ed.bump_art();
+    }
+    ImGui::Spacing();
+}
+
 void draw_palette(Editor& ed) {
     const int n = ed.art_step() ? ed.doc.palette_count() : ed.atlas.palette_count();
     ImGui::Text("Palette (%d)", n);
-    if (ed.paint_index >= 0 && ed.paint_index < n) {
-        Rgb c = ed.color(ed.paint_index);
-        float col[3] = {c.r / 255.0f, c.g / 255.0f, c.b / 255.0f};
-        const float picker_w = std::min(ImGui::GetContentRegionAvail().x, 120.0f * g_settings.scale);
-        ImGui::SetNextItemWidth(picker_w);
-        if (ImGui::ColorPicker3("##picker", col,
-                                ImGuiColorEditFlags_PickerHueBar |
-                                ImGuiColorEditFlags_NoSidePreview |
-                                ImGuiColorEditFlags_NoAlpha |
-                                ImGuiColorEditFlags_NoInputs |
-                                ImGuiColorEditFlags_NoLabel |
-                                ImGuiColorEditFlags_NoOptions)) {
-            Rgb next = MdColor::quantize(Rgb{static_cast<uint8_t>(col[0] * 255.0f + 0.5f),
-                                             static_cast<uint8_t>(col[1] * 255.0f + 0.5f),
-                                             static_cast<uint8_t>(col[2] * 255.0f + 0.5f)});
-            if (ed.paint_index == 0) {
-                next = Rgb{0, 0, 0};
-            }
-            if (ImGui::IsItemActivated()) {
-                ed.push_undo();
-            }
-            for (int i = 1; i < n; ++i) {
-                if (ed.is_palette_selected(i)) {
-                    if (ed.art_step()) {
-                        ed.doc.set_palette_color(i, next);
-                    } else {
-                        ed.atlas.set_palette_color(i, next);
-                    }
-                }
-            }
-            if (ed.paint_index == 0) {
-                if (ed.art_step()) {
-                    ed.doc.set_palette_color(0, Rgb{0, 0, 0});
-                } else {
-                    ed.atlas.set_palette_color(0, Rgb{0, 0, 0});
-                }
-            }
-            ed.bump_art();
-        }
-        ImGui::Spacing();
-    }
+    draw_rectangular_color_picker(ed, n);
     const float swatch = 22.0f * g_settings.scale;
     for (int i = 0; i < TilesetDoc::kPaletteSize; ++i) {
         if (i % 8 != 0) {
