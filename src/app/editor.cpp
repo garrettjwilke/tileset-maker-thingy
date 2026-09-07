@@ -475,6 +475,7 @@ struct UiState {
     int export_zoom = 4;
     char new_name[64] = "";
     int new_tile_size = 16;
+    bool new_focus_name = false;
 };
 
 UiState g_ui;
@@ -542,7 +543,7 @@ void draw_pixels(ImDrawList* dl, ImVec2 origin, int zoom, int w, int h, const Ed
     }
 }
 
-void draw_preview_grid(Editor& ed, const char* title, int cols, int rows, bool atlas) {
+void draw_preview_grid(Editor& ed, const char* title, int cols, int rows, bool atlas, int ox = 0, int oy = 0) {
     ImGui::TextUnformatted(title);
     const int ts = ed.tile_size();
     const float avail_w = ImGui::GetContentRegionAvail().x;
@@ -550,27 +551,32 @@ void draw_preview_grid(Editor& ed, const char* title, int cols, int rows, bool a
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const ImVec2 size(static_cast<float>(cols * ts * z), static_cast<float>(rows * ts * z));
     ImGui::InvisibleButton("preview", size);
-    draw_pixels(ImGui::GetWindowDrawList(), origin, z, cols * ts, rows * ts, ed, 0, 0, cols, rows, atlas, grid_color());
+    draw_pixels(ImGui::GetWindowDrawList(), origin, z, cols * ts, rows * ts, ed, ox, oy, cols, rows, atlas, grid_color());
     if (ImGui::IsItemClicked()) {
         const ImVec2 mp = ImGui::GetIO().MousePos;
-        const int col = static_cast<int>((mp.x - origin.x) / static_cast<float>(ts * z));
-        const int row = static_cast<int>((mp.y - origin.y) / static_cast<float>(ts * z));
-        if (col >= 0 && row >= 0 && col < cols && row < rows) {
+        const int col = ox + static_cast<int>((mp.x - origin.x) / static_cast<float>(ts * z));
+        const int row = oy + static_cast<int>((mp.y - origin.y) / static_cast<float>(ts * z));
+        if (col >= ox && row >= oy && col < ox + cols && row < oy + rows) {
             if (atlas) {
                 ed.atlas_cell = {col, row};
             } else if (ed.step == Step::Specialty) {
                 ed.specialty = {col, row};
             } else if (ed.step == Step::Edges && col < 3 && row < 3) {
                 ed.preview_sel = {col, row};
+            } else if (ed.step == Step::Center) {
+                ed.preview_sel = {col, row};
             }
             ed.configure_view();
         }
     }
     Cell sel = atlas ? ed.atlas_cell : ed.preview_sel;
-    const ImVec2 s0(origin.x + static_cast<float>(sel.x * ts * z), origin.y + static_cast<float>(sel.y * ts * z));
-    ImGui::GetWindowDrawList()->AddRect(s0,
-                                        ImVec2(s0.x + static_cast<float>(ts * z), s0.y + static_cast<float>(ts * z)),
-                                        IM_COL32(255, 220, 60, 255), 0, 0, 2.0f);
+    if (sel.x >= ox && sel.x < ox + cols && sel.y >= oy && sel.y < oy + rows) {
+        const ImVec2 s0(origin.x + static_cast<float>((sel.x - ox) * ts * z),
+                        origin.y + static_cast<float>((sel.y - oy) * ts * z));
+        ImGui::GetWindowDrawList()->AddRect(s0,
+                                            ImVec2(s0.x + static_cast<float>(ts * z), s0.y + static_cast<float>(ts * z)),
+                                            IM_COL32(255, 220, 60, 255), 0, 0, 2.0f);
+    }
 }
 
 void handle_canvas(Editor& ed) {
@@ -1164,6 +1170,7 @@ void open_new_project_dialog(bool from_welcome) {
     g_ui.new_from_welcome = from_welcome;
     g_ui.new_name[0] = 0;
     g_ui.new_tile_size = 16;
+    g_ui.new_focus_name = true;
 }
 
 bool try_open_project(Editor& ed) {
@@ -1245,11 +1252,15 @@ void draw_split_layout(Editor& ed) {
     ImGui::SameLine(0, 0);
     ImGui::BeginChild("side_panel", ImVec2(side, avail_y), ImGuiChildFlags_Borders);
     if (ed.art_step()) {
-        const int pc = (ed.step == Step::Edges) ? 3 : TilesetDoc::kCols;
-        const int pr = (ed.step == Step::Edges) ? 3 : TilesetDoc::kRows;
-        draw_preview_grid(ed, ed.step == Step::Edges ? "3x3 preview" : "5x3 sheet", pc, pr, false);
+        if (ed.step == Step::Center) {
+            draw_preview_grid(ed, "Center tile", 1, 1, false, TilesetDoc::kCenter.x, TilesetDoc::kCenter.y);
+        } else if (ed.step == Step::Edges) {
+            draw_preview_grid(ed, "3x3 preview", 3, 3, false, 0, 0);
+        } else {
+            draw_preview_grid(ed, "5x3 sheet", TilesetDoc::kCols, TilesetDoc::kRows, false, 0, 0);
+        }
     } else if (ed.has_atlas) {
-        draw_preview_grid(ed, "12x4 atlas", ed.atlas.cols, AtlasDoc::kRows, true);
+        draw_preview_grid(ed, "12x4 atlas", ed.atlas.cols, AtlasDoc::kRows, true, 0, 0);
     }
     row_rule();
     draw_palette(ed);
@@ -1344,22 +1355,35 @@ void draw_new_project_modal(Editor& ed) {
     }
     ImGui::TextUnformatted("Name the tileset and choose a tile size.");
     ImGui::SetNextItemWidth(280);
-    ImGui::InputText("Name", g_ui.new_name, sizeof(g_ui.new_name));
+    if (g_ui.new_focus_name || ImGui::IsWindowAppearing()) {
+        ImGui::SetKeyboardFocusHere();
+        g_ui.new_focus_name = false;
+    }
+    const bool enter_pressed = ImGui::InputText("Name", g_ui.new_name, sizeof(g_ui.new_name),
+                                               ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::TextUnformatted("Tile size");
     ImGui::RadioButton("8x8", &g_ui.new_tile_size, 8);
     ImGui::SameLine();
     ImGui::RadioButton("16x16", &g_ui.new_tile_size, 16);
     const std::string name = trim_copy(g_ui.new_name);
-    ImGui::BeginDisabled(name.empty());
+    const bool can_create = !name.empty();
+    bool should_create = false;
+    if (can_create && (enter_pressed || ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))) {
+        should_create = true;
+    }
+    ImGui::BeginDisabled(!can_create);
     if (ImGui::Button("Create", ImVec2(120, 0))) {
-        ed.reset_new(name, g_ui.new_tile_size);
-        g_ui.project_open = true;
-        g_ui.show_new = false;
-        ImGui::CloseCurrentPopup();
+        should_create = true;
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        g_ui.show_new = false;
+        ImGui::CloseCurrentPopup();
+    }
+    if (should_create && can_create) {
+        ed.reset_new(name, g_ui.new_tile_size);
+        g_ui.project_open = true;
         g_ui.show_new = false;
         ImGui::CloseCurrentPopup();
     }
