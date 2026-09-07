@@ -374,6 +374,104 @@ void test_project_file() {
     std::remove(path.c_str());
 }
 
+void test_corner_context_preview() {
+    using namespace tsm;
+
+    // Test 16x16 doc
+    {
+        TilesetDoc doc(16);
+        const int ts = 16;
+
+        // Set distinctive pixels:
+        // Left edge (0, 1)
+        doc.set_pixel(0, 1, 2, 3, 5);
+        // Right edge (2, 1)
+        doc.hflip_linked = false;
+        doc.set_pixel(2, 1, 4, 5, 6);
+        // Top edge (1, 0)
+        doc.set_pixel(1, 0, 1, 2, 7);
+        // Bottom edge (1, 2)
+        doc.set_pixel(1, 2, 3, 4, 8);
+        // Center (1, 1)
+        doc.set_pixel(TilesetDoc::kCenter.x, TilesetDoc::kCenter.y, 2, 2, 9);
+        // Inner corner (4, 0)
+        doc.set_pixel(TilesetDoc::kInnerCorner.x, TilesetDoc::kInnerCorner.y, 2, 2, 10); // in TL quadrant
+        doc.set_pixel(TilesetDoc::kInnerCorner.x, TilesetDoc::kInnerCorner.y, 10, 2, 11); // in TR quadrant
+        doc.set_pixel(TilesetDoc::kInnerCorner.x, TilesetDoc::kInnerCorner.y, 2, 10, 12); // in BL quadrant
+        doc.set_pixel(TilesetDoc::kInnerCorner.x, TilesetDoc::kInnerCorner.y, 10, 10, 13); // in BR quadrant
+
+        // Check empty corners
+        bool is_bg = false;
+        bool is_cutout = false;
+        doc.corner_context_pixel(0, 0, &is_bg, &is_cutout);
+        expect(is_bg && !is_cutout, "corner_context: (0,0) must be bg");
+
+        doc.corner_context_pixel(3 * ts + 1, 2, &is_bg, &is_cutout);
+        expect(is_bg && !is_cutout, "corner_context: (3,0) tile must be bg");
+
+        doc.corner_context_pixel(2, 3 * ts + 2, &is_bg, &is_cutout);
+        expect(is_bg && !is_cutout, "corner_context: (0,3) tile must be bg");
+
+        doc.corner_context_pixel(3 * ts + 2, 3 * ts + 2, &is_bg, &is_cutout);
+        expect(is_bg && !is_cutout, "corner_context: (3,3) tile must be bg");
+
+        // Check Left edge tile at (1, 0): doc cell (0, 1)
+        int p = doc.corner_context_pixel(1 * ts + 2, 0 * ts + 3, &is_bg, &is_cutout);
+        expect(!is_bg && !is_cutout && p == 5, "corner_context: (1,0) should sample left edge (0,1)");
+
+        // Check Left edge tile at (1, 3): doc cell (0, 1)
+        p = doc.corner_context_pixel(1 * ts + 2, 3 * ts + 3, &is_bg, &is_cutout);
+        expect(!is_bg && !is_cutout && p == 5, "corner_context: (1,3) should sample left edge (0,1)");
+
+        // Check Right edge tile at (2, 0): doc cell (2, 1)
+        p = doc.corner_context_pixel(2 * ts + 4, 0 * ts + 5, &is_bg, &is_cutout);
+        expect(!is_bg && !is_cutout && p == 6, "corner_context: (2,0) should sample right edge (2,1)");
+
+        // Check Top edge tile at (0, 1) and (3, 1): doc cell (1, 0)
+        p = doc.corner_context_pixel(0 * ts + 1, 1 * ts + 2, &is_bg, &is_cutout);
+        expect(!is_bg && !is_cutout && p == 7, "corner_context: (0,1) should sample top edge (1,0)");
+        p = doc.corner_context_pixel(3 * ts + 1, 1 * ts + 2, &is_bg, &is_cutout);
+        expect(!is_bg && !is_cutout && p == 7, "corner_context: (3,1) should sample top edge (1,0)");
+
+        // Check Bottom edge tile at (0, 2) and (3, 2): doc cell (1, 2)
+        p = doc.corner_context_pixel(0 * ts + 3, 2 * ts + 4, &is_bg, &is_cutout);
+        expect(!is_bg && !is_cutout && p == 8, "corner_context: (0,2) should sample bottom edge (1,2)");
+        p = doc.corner_context_pixel(3 * ts + 3, 2 * ts + 4, &is_bg, &is_cutout);
+        expect(!is_bg && !is_cutout && p == 8, "corner_context: (3,2) should sample bottom edge (1,2)");
+
+        // Check Center 4 tiles:
+        // (1, 1): TL quadrant should sample from kInnerCorner (4, 0) and flag is_cutout
+        p = doc.corner_context_pixel(1 * ts + 2, 1 * ts + 2, &is_bg, &is_cutout);
+        expect(!is_bg && is_cutout && p == 10, "corner_context: (1,1) TL quadrant cutout");
+        // (1, 1): Outside TL quadrant should not be cutout
+        p = doc.corner_context_pixel(1 * ts + 10, 1 * ts + 2, &is_bg, &is_cutout);
+        expect(!is_bg && !is_cutout, "corner_context: (1,1) outside TL quadrant not cutout");
+
+        // (2, 1): TR quadrant should sample from kInnerCorner (4, 0) and flag is_cutout
+        p = doc.corner_context_pixel(2 * ts + 10, 1 * ts + 2, &is_bg, &is_cutout);
+        expect(!is_bg && is_cutout && p == 11, "corner_context: (2,1) TR quadrant cutout");
+
+        // (1, 2): BL quadrant should sample from kInnerCorner (4, 0) and flag is_cutout
+        p = doc.corner_context_pixel(1 * ts + 2, 2 * ts + 10, &is_bg, &is_cutout);
+        expect(!is_bg && is_cutout && p == 12, "corner_context: (1,2) BL quadrant cutout");
+
+        // (2, 2): BR quadrant should sample from kInnerCorner (4, 0) and flag is_cutout
+        p = doc.corner_context_pixel(2 * ts + 10, 2 * ts + 10, &is_bg, &is_cutout);
+        expect(!is_bg && is_cutout && p == 13, "corner_context: (2,2) BR quadrant cutout");
+    }
+
+    // Test 8x8 doc
+    {
+        TilesetDoc doc8(8);
+        const int ts = 8;
+        doc8.set_pixel(TilesetDoc::kInnerCorner.x, TilesetDoc::kInnerCorner.y, 1, 1, 14);
+        bool is_bg = false;
+        bool is_cutout = false;
+        int p = doc8.corner_context_pixel(1 * ts + 1, 1 * ts + 1, &is_bg, &is_cutout);
+        expect(!is_bg && is_cutout && p == 14, "corner_context 8x8: (1,1) TL cutout");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -383,6 +481,7 @@ int main() {
     test_golden_vs_cli();
     test_settings_file();
     test_project_file();
+    test_corner_context_preview();
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";
         return 1;

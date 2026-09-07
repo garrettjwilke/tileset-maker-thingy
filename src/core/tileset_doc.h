@@ -56,6 +56,7 @@ public:
 
     int get_pixel(int col, int row, int x, int y) const;
     void set_pixel(int col, int row, int x, int y, int index);
+    int corner_context_pixel(int px, int py, bool* out_is_bg = nullptr, bool* out_is_cutout = nullptr) const;
 
     int palette_count() const;
     int last_palette_index() const;

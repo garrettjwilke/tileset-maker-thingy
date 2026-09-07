@@ -124,6 +124,84 @@ int TilesetDoc::get_pixel(int col, int row, int x, int y) const {
     return tiles[static_cast<size_t>(cell_index(col, row))][static_cast<size_t>(y * tile_size + x)];
 }
 
+int TilesetDoc::corner_context_pixel(int px, int py, bool* out_is_bg, bool* out_is_cutout) const {
+    if (out_is_bg) *out_is_bg = false;
+    if (out_is_cutout) *out_is_cutout = false;
+    if (tile_size <= 0) return 0;
+
+    const int total = 4 * tile_size;
+    if (px < 0 || py < 0 || px >= total || py >= total) {
+        if (out_is_bg) *out_is_bg = true;
+        return 0;
+    }
+
+    const int tx = px / tile_size;
+    const int ty = py / tile_size;
+    const int lx = px % tile_size;
+    const int ly = py % tile_size;
+    const int half = tile_size / 2;
+
+    // Checkerboard background for empty corner tiles (0,0), (3,0), (0,3), (3,3)
+    if ((tx == 0 || tx == 3) && (ty == 0 || ty == 3)) {
+        if (out_is_bg) *out_is_bg = true;
+        return 0;
+    }
+
+    // Surrounding edge tiles in 4x4 layout:
+    // (1, 0): Left edge (0, 1)
+    if (tx == 1 && ty == 0) return get_pixel(0, 1, lx, ly);
+    // (2, 0): Right edge (2, 1)
+    if (tx == 2 && ty == 0) return get_pixel(2, 1, lx, ly);
+    // (0, 1): Top edge (1, 0)
+    if (tx == 0 && ty == 1) return get_pixel(1, 0, lx, ly);
+    // (3, 1): Top edge (1, 0)
+    if (tx == 3 && ty == 1) return get_pixel(1, 0, lx, ly);
+    // (0, 2): Bottom edge (1, 2)
+    if (tx == 0 && ty == 2) return get_pixel(1, 2, lx, ly);
+    // (3, 2): Bottom edge (1, 2)
+    if (tx == 3 && ty == 2) return get_pixel(1, 2, lx, ly);
+    // (1, 3): Left edge (0, 1)
+    if (tx == 1 && ty == 3) return get_pixel(0, 1, lx, ly);
+    // (2, 3): Right edge (2, 1)
+    if (tx == 2 && ty == 3) return get_pixel(2, 1, lx, ly);
+
+    // Center 4 tiles:
+    // (1, 1): Center ground with TL inner corner quadrant of (4,0)
+    if (tx == 1 && ty == 1) {
+        if (lx < half && ly < half) {
+            if (out_is_cutout) *out_is_cutout = true;
+            return get_pixel(kInnerCorner.x, kInnerCorner.y, lx, ly);
+        }
+        return get_pixel(kCenter.x, kCenter.y, lx, ly);
+    }
+    // (2, 1): Center ground with TR inner corner quadrant of (4,0)
+    if (tx == 2 && ty == 1) {
+        if (lx >= half && ly < half) {
+            if (out_is_cutout) *out_is_cutout = true;
+            return get_pixel(kInnerCorner.x, kInnerCorner.y, lx, ly);
+        }
+        return get_pixel(kCenter.x, kCenter.y, lx, ly);
+    }
+    // (1, 2): Center ground with BL inner corner quadrant of (4,0)
+    if (tx == 1 && ty == 2) {
+        if (lx < half && ly >= half) {
+            if (out_is_cutout) *out_is_cutout = true;
+            return get_pixel(kInnerCorner.x, kInnerCorner.y, lx, ly);
+        }
+        return get_pixel(kCenter.x, kCenter.y, lx, ly);
+    }
+    // (2, 2): Center ground with BR inner corner quadrant of (4,0)
+    if (tx == 2 && ty == 2) {
+        if (lx >= half && ly >= half) {
+            if (out_is_cutout) *out_is_cutout = true;
+            return get_pixel(kInnerCorner.x, kInnerCorner.y, lx, ly);
+        }
+        return get_pixel(kCenter.x, kCenter.y, lx, ly);
+    }
+
+    return 0;
+}
+
 void TilesetDoc::set_pixel(int col, int row, int x, int y, int index) {
     if (!in_sheet(col, row) || x < 0 || y < 0 || x >= tile_size || y >= tile_size) {
         return;
