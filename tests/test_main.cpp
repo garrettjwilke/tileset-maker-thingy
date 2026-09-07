@@ -481,15 +481,15 @@ void test_specialty_context_cell() {
     expect(TilesetDoc::specialty_context_cell(TilesetDoc::kPillarTop, 1, 1) == TilesetDoc::kPillarTop,
            "specialty center must be pillar top");
 
-    // Inner Corner (4, 0): N, S, E, W are the edge tiles
-    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 1, 0) == Cell{1, 0},
-           "inner corner N should be top edge (1,0)");
-    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 1, 2) == Cell{1, 2},
-           "inner corner S should be bottom edge (1,2)");
-    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 0, 1) == Cell{0, 1},
-           "inner corner W should be left edge (0,1)");
-    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 2, 1) == Cell{2, 1},
-           "inner corner E should be right edge (2,1)");
+    // Inner Corner (4, 0): surrounding cells are dynamic atlas preview context (read-only, {-1, -1})
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 1, 0) == Cell{-1, -1},
+           "inner corner N should be empty cell (atlas preview)");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 1, 2) == Cell{-1, -1},
+           "inner corner S should be empty cell (atlas preview)");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 0, 1) == Cell{-1, -1},
+           "inner corner W should be empty cell (atlas preview)");
+    expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 2, 1) == Cell{-1, -1},
+           "inner corner E should be empty cell (atlas preview)");
     expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 0, 0) == Cell{-1, -1},
            "inner corner NW should be empty");
     expect(TilesetDoc::specialty_context_cell(TilesetDoc::kInnerCorner, 2, 0) == Cell{-1, -1},
@@ -544,17 +544,94 @@ void test_specialty_context_cell() {
            "out of bounds y should be empty");
 }
 
+void test_palette_multi_reorder() {
+    using namespace tsm;
+    TilesetDoc doc(8);
+    // Setup distinct colors in slots 0, 1, 2, 3, 4
+    const Rgb c0{0, 0, 0};
+    const Rgb c1{255, 0, 0};
+    const Rgb c2{0, 255, 0};
+    const Rgb c3{0, 0, 255};
+    const Rgb c4{255, 255, 0};
+    doc.set_palette_color(0, c0);
+    doc.set_palette_color(1, c1);
+    doc.set_palette_color(2, c2);
+    doc.set_palette_color(3, c3);
+    doc.set_palette_color(4, c4);
+
+    // Paint pixels with indices 1, 2, 3, 4
+    doc.set_pixel(1, 1, 0, 0, 1);
+    doc.set_pixel(1, 1, 1, 0, 2);
+    doc.set_pixel(1, 1, 2, 0, 3);
+    doc.set_pixel(1, 1, 3, 0, 4);
+
+    // Boundary check: cannot reorder with slot 0 or >= n
+    expect(!doc.reorder_palette(0, 1), "slot 0 should not be movable");
+    expect(!doc.reorder_palette(1, 0), "slot 0 should not be target");
+    expect(!doc.reorder_palette(1, 16), "out of bounds to should fail");
+    expect(!doc.reorder_palette(16, 1), "out of bounds from should fail");
+
+    // Shift run [2, 3] right: move item at 4 to index 2
+    // doc.reorder_palette(4, 2)
+    expect(doc.reorder_palette(4, 2), "reorder 4->2 should succeed");
+    // Colors should now be: 0, 1, 4, 2, 3
+    expect(doc.color_at(1) == c1, "slot 1 should be c1");
+    expect(doc.color_at(2) == c4, "slot 2 should be c4");
+    expect(doc.color_at(3) == c2, "slot 3 should be c2");
+    expect(doc.color_at(4) == c3, "slot 4 should be c3");
+
+    // Pixels that had colors 2 and 3 should follow to 3 and 4; pixel that had 4 should follow to 2
+    expect(doc.get_pixel(1, 1, 0, 0) == 1, "pixel 1 unchanged");
+    expect(doc.get_pixel(1, 1, 1, 0) == 3, "pixel with c2 followed to slot 3");
+    expect(doc.get_pixel(1, 1, 2, 0) == 4, "pixel with c3 followed to slot 4");
+    expect(doc.get_pixel(1, 1, 3, 0) == 2, "pixel with c4 followed to slot 2");
+
+    // Now shift run [3, 4] left: move item at (3 - 1 = 2) to index 4
+    // doc.reorder_palette(2, 4)
+    expect(doc.reorder_palette(2, 4), "reorder 2->4 should succeed");
+    // Colors should now be back: 0, 1, 2, 3, 4
+    expect(doc.color_at(1) == c1, "slot 1 back to c1");
+    expect(doc.color_at(2) == c2, "slot 2 back to c2");
+    expect(doc.color_at(3) == c3, "slot 3 back to c3");
+    expect(doc.color_at(4) == c4, "slot 4 back to c4");
+
+    // Pixels follow back
+    expect(doc.get_pixel(1, 1, 0, 0) == 1, "pixel 1 unchanged");
+    expect(doc.get_pixel(1, 1, 1, 0) == 2, "pixel with c2 back to slot 2");
+    expect(doc.get_pixel(1, 1, 2, 0) == 3, "pixel with c3 back to slot 3");
+    expect(doc.get_pixel(1, 1, 3, 0) == 4, "pixel with c4 back to slot 4");
+}
+
+void test_inner_corner_atlas_preview() {
+    using namespace tsm;
+    TilesetDoc doc(16);
+    doc.seed_from_center();
+    doc.stamp_specialty(TilesetDoc::kInnerCorner);
+    AtlasDoc atlas(16);
+    const std::string err = convert_tileset_to_atlas(doc, atlas);
+    expect(err.empty(), "atlas conversion for inner corner preview");
+
+    // Atlas tile (0, 1) represents horizontal edge / continuity (North & South preview)
+    // Atlas tile (2, 3) represents vertical edge / continuity (West & East preview)
+    const auto& n_tile = atlas.get_tile(0, 1);
+    const auto& w_tile = atlas.get_tile(2, 3);
+    expect(!n_tile.empty() && n_tile.size() == 16 * 16, "atlas tile (0, 1) should be populated");
+    expect(!w_tile.empty() && w_tile.size() == 16 * 16, "atlas tile (2, 3) should be populated");
+}
+
 } // namespace
 
 int main() {
     test_mirrors_and_stamps();
     test_palette();
+    test_palette_multi_reorder();
     test_pipeline_and_export();
     test_golden_vs_cli();
     test_settings_file();
     test_project_file();
     test_corner_context_preview();
     test_specialty_context_cell();
+    test_inner_corner_atlas_preview();
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";
         return 1;
@@ -562,3 +639,4 @@ int main() {
     std::cout << "self-test: ok\n";
     return 0;
 }
+

@@ -125,6 +125,37 @@ struct Editor {
 
     Tool tool = Tool::Pencil;
     int paint_index = 1;
+    uint16_t palette_selected_mask = (1 << 1);
+    int palette_anchor = 1;
+
+    bool is_palette_selected(int idx) const {
+        return (idx >= 0 && idx < 16) && ((palette_selected_mask & (1 << idx)) != 0);
+    }
+    void select_single_palette(int idx) {
+        paint_index = idx;
+        palette_anchor = idx;
+        palette_selected_mask = (idx >= 0 && idx < 16) ? static_cast<uint16_t>(1 << idx) : 0;
+    }
+    void select_range_palette(int dest) {
+        if (dest < 0 || dest >= 16) return;
+        paint_index = dest;
+        palette_selected_mask = 0;
+        const int lo = std::min(palette_anchor, dest);
+        const int hi = std::max(palette_anchor, dest);
+        for (int k = lo; k <= hi; ++k) {
+            palette_selected_mask |= static_cast<uint16_t>(1 << k);
+        }
+    }
+    void toggle_palette_selected(int idx) {
+        if (idx < 0 || idx >= 16) return;
+        palette_selected_mask ^= static_cast<uint16_t>(1 << idx);
+        if (palette_selected_mask == 0) {
+            palette_selected_mask = static_cast<uint16_t>(1 << idx);
+        }
+        paint_index = idx;
+        palette_anchor = idx;
+    }
+
     int brush = 1;
     bool tile_mode = true;
     bool export_header = true;
@@ -134,6 +165,7 @@ struct Editor {
     float sidebar_w = 320.0f;
 
     bool dragging = false;
+    bool stroke_has_drawn = false;
     bool selecting = false;
     bool stroke_pending = false;
     Cell hover{-1, -1};
@@ -321,6 +353,30 @@ struct Editor {
         return {src.x % ts, src.y % ts};
     }
 
+    int sample_hover_pixel(Cell hover) {
+        if (hover.x < 0 || hover.y < 0) return -1;
+        const Cell loc = src_local(hover);
+        if (step == Step::Specialty && specialty == TilesetDoc::kInnerCorner) {
+            ensure_atlas();
+            const int ts = tile_size();
+            const int gx = hover.x / ts;
+            const int gy = hover.y / ts;
+            if (gx == 1 && gy == 1) {
+                return doc.get_pixel(TilesetDoc::kInnerCorner.x, TilesetDoc::kInnerCorner.y, loc.x, loc.y);
+            } else if ((gx == 1 && gy == 0) || (gx == 1 && gy == 2)) {
+                return atlas.get_pixel(0, 1, loc.x, loc.y);
+            } else if ((gx == 0 && gy == 1) || (gx == 2 && gy == 1)) {
+                return atlas.get_pixel(2, 3, loc.x, loc.y);
+            }
+            return -1;
+        }
+        const Cell cell = src_to_cell(hover);
+        if (in_doc(cell.x, cell.y)) {
+            return get_px(cell.x, cell.y, loc.x, loc.y);
+        }
+        return -1;
+    }
+
     bool plot_src(Cell src, int index) {
         if (src.x < 0 || src.y < 0 || src.x >= src_w() || src.y >= src_h()) {
             return false;
@@ -348,6 +404,25 @@ struct Editor {
             }
         }
         return wrote;
+    }
+
+    bool can_stamp(Cell origin) const {
+        for (int dy = 0; dy < brush; ++dy) {
+            for (int dx = 0; dx < brush; ++dx) {
+                const Cell p{origin.x + dx, origin.y + dy};
+                if (has_selection() && !in_selection(p)) {
+                    continue;
+                }
+                if (p.x < 0 || p.y < 0 || p.x >= src_w() || p.y >= src_h()) {
+                    continue;
+                }
+                const Cell cell = src_to_cell(p);
+                if (in_doc(cell.x, cell.y)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     void go_next() {
@@ -580,11 +655,11 @@ ImU32 grid_color() {
     return canvas_tile_grid_color();
 }
 
-void draw_pixels(ImDrawList* dl, ImVec2 origin, int zoom, int w, int h, const Editor& ed, int ox, int oy, int cols,
+void draw_pixels(ImDrawList* dl, ImVec2 origin, float zoom, int w, int h, const Editor& ed, int ox, int oy, int cols,
                  int rows, bool atlas, ImU32 grid_col, float grid_thickness = 1.0f, bool pixel_grid = false,
                  bool canvas_mode = false) {
     const int ts = atlas ? ed.atlas.tile_size : ed.doc.tile_size;
-    if (ts <= 0 || zoom <= 0) {
+    if (ts <= 0 || zoom <= 0.0f) {
         return;
     }
     const ImU32 bg_a = g_settings.dark ? IM_COL32(31, 33, 41, 255) : IM_COL32(235, 237, 240, 255);
@@ -592,10 +667,34 @@ void draw_pixels(ImDrawList* dl, ImVec2 origin, int zoom, int w, int h, const Ed
 
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
-            const ImVec2 p0(origin.x + static_cast<float>(x * zoom), origin.y + static_cast<float>(y * zoom));
-            const ImVec2 p1(p0.x + static_cast<float>(zoom), p0.y + static_cast<float>(zoom));
+            const ImVec2 p0(origin.x + static_cast<float>(x) * zoom, origin.y + static_cast<float>(y) * zoom);
+            const ImVec2 p1(origin.x + static_cast<float>(x + 1) * zoom, origin.y + static_cast<float>(y + 1) * zoom);
 
             if (canvas_mode && !atlas && ed.step == Step::Specialty) {
+                const int gx = x / ts;
+                const int gy = y / ts;
+                const int lx = x % ts;
+                const int ly = y % ts;
+
+                if (ed.specialty == TilesetDoc::kInnerCorner) {
+                    if (gx == 1 && gy == 1) {
+                        const int idx = ed.doc.get_pixel(TilesetDoc::kInnerCorner.x, TilesetDoc::kInnerCorner.y, lx, ly);
+                        dl->AddRectFilled(p0, p1, im_color(ed.doc.color_at(idx)));
+                    } else if ((gx == 1 && gy == 0) || (gx == 1 && gy == 2)) {
+                        // North and South tiles: tile 0,1 from the 12x4 atlas
+                        const int idx = ed.atlas.get_pixel(0, 1, lx, ly);
+                        dl->AddRectFilled(p0, p1, im_color(ed.atlas.color_at(idx)));
+                    } else if ((gx == 0 && gy == 1) || (gx == 2 && gy == 1)) {
+                        // West and East tiles: tile 2,3 from the 12x4 atlas
+                        const int idx = ed.atlas.get_pixel(2, 3, lx, ly);
+                        dl->AddRectFilled(p0, p1, im_color(ed.atlas.color_at(idx)));
+                    } else {
+                        const bool checker = (((x / 4) + (y / 4)) % 2 == 0);
+                        dl->AddRectFilled(p0, p1, checker ? bg_a : bg_b);
+                    }
+                    continue;
+                }
+
                 const Cell cell = ed.src_to_cell(Cell{x, y});
                 if (cell.x < 0 || cell.y < 0) {
                     const bool checker = (((x / 4) + (y / 4)) % 2 == 0);
@@ -668,15 +767,16 @@ void draw_preview_grid(Editor& ed, const char* title, int cols, int rows, bool a
     ImGui::TextUnformatted(title);
     const int ts = ed.tile_size();
     const float avail_w = ImGui::GetContentRegionAvail().x;
-    const int z = std::max(1, static_cast<int>(avail_w / static_cast<float>(std::max(1, cols * ts))));
+    const float grid_px_w = static_cast<float>(std::max(1, cols * ts));
+    const float z = std::max(0.1f, avail_w / grid_px_w);
     const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const ImVec2 size(static_cast<float>(cols * ts * z), static_cast<float>(rows * ts * z));
+    const ImVec2 size(avail_w, static_cast<float>(rows * ts) * z);
     ImGui::InvisibleButton("preview", size);
     draw_pixels(ImGui::GetWindowDrawList(), origin, z, cols * ts, rows * ts, ed, ox, oy, cols, rows, atlas, grid_color());
     if (ImGui::IsItemClicked()) {
         const ImVec2 mp = ImGui::GetIO().MousePos;
-        const int col = ox + static_cast<int>((mp.x - origin.x) / static_cast<float>(ts * z));
-        const int row = oy + static_cast<int>((mp.y - origin.y) / static_cast<float>(ts * z));
+        const int col = ox + static_cast<int>((mp.x - origin.x) / (static_cast<float>(ts) * z));
+        const int row = oy + static_cast<int>((mp.y - origin.y) / (static_cast<float>(ts) * z));
         if (col >= ox && row >= oy && col < ox + cols && row < oy + rows) {
             if (atlas) {
                 ed.atlas_cell = {col, row};
@@ -693,10 +793,10 @@ void draw_preview_grid(Editor& ed, const char* title, int cols, int rows, bool a
     }
     Cell sel = atlas ? ed.atlas_cell : ed.preview_sel;
     if (sel.x >= ox && sel.x < ox + cols && sel.y >= oy && sel.y < oy + rows) {
-        const ImVec2 s0(origin.x + static_cast<float>((sel.x - ox) * ts * z),
-                        origin.y + static_cast<float>((sel.y - oy) * ts * z));
+        const ImVec2 s0(origin.x + static_cast<float>((sel.x - ox) * ts) * z,
+                        origin.y + static_cast<float>((sel.y - oy) * ts) * z);
         ImGui::GetWindowDrawList()->AddRect(s0,
-                                            ImVec2(s0.x + static_cast<float>(ts * z), s0.y + static_cast<float>(ts * z)),
+                                            ImVec2(s0.x + static_cast<float>(ts) * z, s0.y + static_cast<float>(ts) * z),
                                             IM_COL32(255, 220, 60, 255), 0, 0, 2.0f);
     }
 }
@@ -874,6 +974,9 @@ void cancel_paste(Editor& ed) {
 }
 
 void handle_canvas(Editor& ed) {
+    if (ed.step == Step::Specialty) {
+        ed.ensure_atlas();
+    }
     const int ts = ed.tile_size();
     const int sw = ed.src_w();
     const int sh = ed.src_h();
@@ -990,9 +1093,10 @@ void handle_canvas(Editor& ed) {
         }
 
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && ed.hover.x >= 0) {
-            const Cell cell = ed.src_to_cell(ed.hover);
-            const Cell loc = ed.src_local(ed.hover);
-            ed.paint_index = ed.get_px(cell.x, cell.y, loc.x, loc.y);
+            const int px = ed.sample_hover_pixel(ed.hover);
+            if (px >= 0) {
+                ed.select_single_palette(px);
+            }
         }
 
         const bool stroke_tool = ed.tool == Tool::Line || ed.tool == Tool::Square || ed.tool == Tool::Circle;
@@ -1021,61 +1125,75 @@ void handle_canvas(Editor& ed) {
                 ed.stroke_to = ed.hover;
                 ed.stroke_pending = true;
             } else if (ed.tool == Tool::Eyedropper) {
-                const Cell cell = ed.src_to_cell(ed.hover);
-                const Cell loc = ed.src_local(ed.hover);
-                ed.paint_index = ed.get_px(cell.x, cell.y, loc.x, loc.y);
+                const int px = ed.sample_hover_pixel(ed.hover);
+                if (px >= 0) {
+                    ed.select_single_palette(px);
+                }
             } else if (ed.tool == Tool::Fill) {
                 if (ed.has_selection() && !ed.in_selection(ed.hover)) {
                     // Clicked outside selection: do nothing
                 } else if (!ed.has_selection()) {
                     const Cell cell = ed.src_to_cell(ed.hover);
-                    const Cell loc = ed.src_local(ed.hover);
-                    ed.push_undo();
-                    if (ed.art_step()) {
-                        ed.doc.flood_fill(cell.x, cell.y, loc.x, loc.y, ed.paint_index);
-                    } else {
-                        ed.atlas.flood_fill(cell.x, cell.y, loc.x, loc.y, ed.paint_index);
-                    }
-                    ed.bump_art();
-                } else {
-                    const Cell start_cell = ed.src_to_cell(ed.hover);
-                    const Cell start_loc = ed.src_local(ed.hover);
-                    const int old = ed.get_px(start_cell.x, start_cell.y, start_loc.x, start_loc.y);
-                    if (old != ed.paint_index) {
+                    if (ed.in_doc(cell.x, cell.y)) {
+                        const Cell loc = ed.src_local(ed.hover);
                         ed.push_undo();
-                        std::vector<Cell> stack{ed.hover};
-                        std::vector<uint8_t> seen(static_cast<size_t>(sw * sh), 0);
-                        while (!stack.empty()) {
-                            const Cell p = stack.back();
-                            stack.pop_back();
-                            if (p.x < 0 || p.y < 0 || p.x >= sw || p.y >= sh) continue;
-                            if (!ed.in_selection(p)) continue;
-                            const size_t key = static_cast<size_t>(p.y * sw + p.x);
-                            if (seen[key]) continue;
-                            seen[key] = 1;
-                            const Cell c = ed.src_to_cell(p);
-                            const Cell loc = ed.src_local(p);
-                            if (!ed.in_doc(c.x, c.y)) continue;
-                            if (ed.get_px(c.x, c.y, loc.x, loc.y) != old) continue;
-                            ed.set_px(c.x, c.y, loc.x, loc.y, ed.paint_index);
-                            stack.push_back({p.x + 1, p.y});
-                            stack.push_back({p.x - 1, p.y});
-                            stack.push_back({p.x, p.y + 1});
-                            stack.push_back({p.x, p.y - 1});
+                        if (ed.art_step()) {
+                            ed.doc.flood_fill(cell.x, cell.y, loc.x, loc.y, ed.paint_index);
+                        } else {
+                            ed.atlas.flood_fill(cell.x, cell.y, loc.x, loc.y, ed.paint_index);
                         }
                         ed.bump_art();
                     }
+                } else {
+                    const Cell start_cell = ed.src_to_cell(ed.hover);
+                    if (ed.in_doc(start_cell.x, start_cell.y)) {
+                        const Cell start_loc = ed.src_local(ed.hover);
+                        const int old = ed.get_px(start_cell.x, start_cell.y, start_loc.x, start_loc.y);
+                        if (old != ed.paint_index) {
+                            ed.push_undo();
+                            std::vector<Cell> stack{ed.hover};
+                            std::vector<uint8_t> seen(static_cast<size_t>(sw * sh), 0);
+                            while (!stack.empty()) {
+                                const Cell p = stack.back();
+                                stack.pop_back();
+                                if (p.x < 0 || p.y < 0 || p.x >= sw || p.y >= sh) continue;
+                                if (!ed.in_selection(p)) continue;
+                                const size_t key = static_cast<size_t>(p.y * sw + p.x);
+                                if (seen[key]) continue;
+                                seen[key] = 1;
+                                const Cell c = ed.src_to_cell(p);
+                                const Cell loc = ed.src_local(p);
+                                if (!ed.in_doc(c.x, c.y)) continue;
+                                if (ed.get_px(c.x, c.y, loc.x, loc.y) != old) continue;
+                                ed.set_px(c.x, c.y, loc.x, loc.y, ed.paint_index);
+                                stack.push_back({p.x + 1, p.y});
+                                stack.push_back({p.x - 1, p.y});
+                                stack.push_back({p.x, p.y + 1});
+                                stack.push_back({p.x, p.y - 1});
+                            }
+                            ed.bump_art();
+                        }
+                    }
                 }
             } else {
-                if (!ed.has_selection() || ed.in_selection(ed.hover)) {
-                    ed.push_undo();
-                    ed.stamp_src(ed.hover, ed.tool == Tool::Eraser ? 0 : ed.paint_index);
-                    ed.bump_art();
-                }
+                ed.stroke_has_drawn = false;
                 ed.dragging = true;
+                if (!ed.has_selection() || ed.in_selection(ed.hover)) {
+                    if (ed.can_stamp(ed.hover)) {
+                        ed.push_undo();
+                        ed.stroke_has_drawn = true;
+                        if (ed.stamp_src(ed.hover, ed.tool == Tool::Eraser ? 0 : ed.paint_index)) {
+                            ed.bump_art();
+                        }
+                    }
+                }
             }
         }
         if (ed.dragging && ImGui::IsMouseDown(ImGuiMouseButton_Left) && ed.hover.x >= 0) {
+            if (!ed.stroke_has_drawn && ed.can_stamp(ed.hover)) {
+                ed.push_undo();
+                ed.stroke_has_drawn = true;
+            }
             if (ed.stamp_src(ed.hover, ed.tool == Tool::Eraser ? 0 : ed.paint_index)) {
                 ed.bump_art();
             }
@@ -1118,13 +1236,23 @@ void handle_canvas(Editor& ed) {
                 } else {
                     pts = tsm::bresenham(ed.stroke_from, ed.stroke_to);
                 }
-                ed.push_undo();
+                bool can_draw = false;
                 for (Cell p : pts) {
-                    ed.stamp_src(p, ed.paint_index);
+                    if (ed.can_stamp(p)) {
+                        can_draw = true;
+                        break;
+                    }
                 }
-                ed.bump_art();
+                if (can_draw) {
+                    ed.push_undo();
+                    for (Cell p : pts) {
+                        ed.stamp_src(p, ed.paint_index);
+                    }
+                    ed.bump_art();
+                }
             }
             ed.dragging = false;
+            ed.stroke_has_drawn = false;
             ed.stroke_pending = false;
             ed.stroke_from = {-1, -1};
         }
@@ -1205,6 +1333,103 @@ void handle_canvas(Editor& ed) {
     (void)ts;
 }
 
+std::vector<std::pair<int, int>> selected_palette_runs(const Editor& ed) {
+    std::vector<std::pair<int, int>> runs;
+    std::vector<int> indices;
+    const int n = ed.art_step() ? ed.doc.palette_count() : ed.atlas.palette_count();
+    for (int i = 1; i < n; ++i) {
+        if (ed.is_palette_selected(i)) {
+            indices.push_back(i);
+        }
+    }
+    if (indices.empty()) {
+        return runs;
+    }
+    int lo = indices[0];
+    int prev = lo;
+    for (size_t i = 1; i < indices.size(); ++i) {
+        int idx = indices[i];
+        if (idx == prev + 1) {
+            prev = idx;
+            continue;
+        }
+        runs.push_back({lo, prev});
+        lo = idx;
+        prev = idx;
+    }
+    runs.push_back({lo, prev});
+    return runs;
+}
+
+bool can_shift_palette(const Editor& ed, int delta) {
+    if (delta != 1 && delta != -1) return false;
+    const int n = ed.art_step() ? ed.doc.palette_count() : ed.atlas.palette_count();
+    auto runs = selected_palette_runs(ed);
+    for (const auto& run : runs) {
+        if (run.first + delta >= 1 && run.second + delta < n) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool shift_selected_palette(Editor& ed, int delta) {
+    if (delta != 1 && delta != -1) return false;
+    const int n = ed.art_step() ? ed.doc.palette_count() : ed.atlas.palette_count();
+    auto runs = selected_palette_runs(ed);
+    if (runs.empty()) return false;
+
+    if (delta > 0) {
+        std::reverse(runs.begin(), runs.end());
+    }
+
+    std::vector<std::pair<int, int>> moving;
+    for (const auto& run : runs) {
+        if (run.first + delta >= 1 && run.second + delta < n) {
+            moving.push_back(run);
+        }
+    }
+    if (moving.empty()) return false;
+
+    ed.push_undo();
+    std::vector<bool> moved(16, false);
+    for (const auto& run : moving) {
+        bool ok = false;
+        if (delta > 0) {
+            ok = ed.art_step() ? ed.doc.reorder_palette(run.second + 1, run.first)
+                               : ed.atlas.reorder_palette(run.second + 1, run.first);
+        } else {
+            ok = ed.art_step() ? ed.doc.reorder_palette(run.first - 1, run.second)
+                               : ed.atlas.reorder_palette(run.first - 1, run.second);
+        }
+        if (!ok) continue;
+        for (int i = run.first; i <= run.second; ++i) {
+            moved[i] = true;
+        }
+    }
+
+    uint16_t next_mask = 0;
+    for (int i = 0; i < 16; ++i) {
+        if (ed.palette_selected_mask & (1 << i)) {
+            if (moved[i]) {
+                next_mask |= static_cast<uint16_t>(1 << (i + delta));
+            } else {
+                next_mask |= static_cast<uint16_t>(1 << i);
+            }
+        }
+    }
+    ed.palette_selected_mask = next_mask;
+    if (ed.paint_index >= 1 && ed.paint_index < 16 && moved[ed.paint_index]) {
+        ed.paint_index += delta;
+    }
+    if (ed.palette_anchor >= 1 && ed.palette_anchor < 16 && moved[ed.palette_anchor]) {
+        ed.palette_anchor += delta;
+    }
+    ed.bump_art();
+    ed.touch();
+    return true;
+}
+
 void draw_palette(Editor& ed) {
     const int n = ed.art_step() ? ed.doc.palette_count() : ed.atlas.palette_count();
     ImGui::Text("Palette (%d)", n);
@@ -1226,10 +1451,21 @@ void draw_palette(Editor& ed) {
             if (ImGui::IsItemActivated()) {
                 ed.push_undo();
             }
-            if (ed.art_step()) {
-                ed.doc.set_palette_color(ed.paint_index, next);
-            } else {
-                ed.atlas.set_palette_color(ed.paint_index, next);
+            for (int i = 1; i < n; ++i) {
+                if (ed.is_palette_selected(i)) {
+                    if (ed.art_step()) {
+                        ed.doc.set_palette_color(i, next);
+                    } else {
+                        ed.atlas.set_palette_color(i, next);
+                    }
+                }
+            }
+            if (ed.paint_index == 0) {
+                if (ed.art_step()) {
+                    ed.doc.set_palette_color(0, Rgb{0, 0, 0});
+                } else {
+                    ed.atlas.set_palette_color(0, Rgb{0, 0, 0});
+                }
             }
             ed.bump_art();
         }
@@ -1246,11 +1482,20 @@ void draw_palette(Editor& ed) {
             float col[3] = {c.r / 255.0f, c.g / 255.0f, c.b / 255.0f};
             if (ImGui::ColorButton("##sw", ImVec4(col[0], col[1], col[2], 1), ImGuiColorEditFlags_NoTooltip,
                                    ImVec2(swatch, swatch))) {
-                ed.paint_index = i;
+                if (ImGui::GetIO().KeyShift) {
+                    ed.select_range_palette(i);
+                } else if (ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeySuper) {
+                    ed.toggle_palette_selected(i);
+                } else {
+                    ed.select_single_palette(i);
+                }
             }
             if (ed.paint_index == i) {
                 ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
                                                     IM_COL32(255, 220, 60, 255), 0, 0, 2.0f);
+            } else if (ed.is_palette_selected(i)) {
+                ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                                    IM_COL32(100, 200, 255, 255), 0, 0, 2.0f);
             }
         } else {
             const ImVec2 p0 = ImGui::GetCursorScreenPos();
@@ -1260,6 +1505,28 @@ void draw_palette(Editor& ed) {
             ImGui::GetWindowDrawList()->AddRect(p0, p1, grid_color());
         }
         ImGui::PopID();
+    }
+    ImGui::Spacing();
+    const bool can_left = can_shift_palette(ed, -1);
+    const bool can_right = can_shift_palette(ed, 1);
+    if (!can_left) {
+        ImGui::BeginDisabled();
+    }
+    if (ImGui::Button("< Shift Left")) {
+        shift_selected_palette(ed, -1);
+    }
+    if (!can_left) {
+        ImGui::EndDisabled();
+    }
+    ImGui::SameLine();
+    if (!can_right) {
+        ImGui::BeginDisabled();
+    }
+    if (ImGui::Button("Shift Right >")) {
+        shift_selected_palette(ed, 1);
+    }
+    if (!can_right) {
+        ImGui::EndDisabled();
     }
     if (ImGui::BeginCombo("Preset", "Apply preset")) {
         for (const auto& name : PalettePresets::names()) {
@@ -1272,12 +1539,13 @@ void draw_palette(Editor& ed) {
                     ed.atlas.apply_palette(colors);
                 }
                 ed.paint_index = std::min(ed.paint_index, ed.last_index());
+                ed.select_single_palette(ed.paint_index);
                 ed.bump_art();
             }
         }
         ImGui::EndCombo();
     }
-    if (ImGui::Button("Grow")) {
+    if (ImGui::Button("Add Color")) {
         if (ed.art_step()) {
             ed.doc.grow_palette();
         } else {
@@ -1286,13 +1554,16 @@ void draw_palette(Editor& ed) {
         ed.touch();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Compact unused")) {
+    if (ImGui::Button("Remove Unused Colors")) {
         ed.push_undo();
         if (ed.art_step()) {
             ed.doc.compact_unused();
         } else {
             ed.atlas.compact_unused();
         }
+        const int count = ed.art_step() ? ed.doc.palette_count() : ed.atlas.palette_count();
+        ed.paint_index = std::clamp(ed.paint_index, 0, count - 1);
+        ed.select_single_palette(ed.paint_index);
         ed.bump_art();
     }
     if (ImGui::Button("Load .palette")) {
@@ -1308,6 +1579,8 @@ void draw_palette(Editor& ed) {
                 } else {
                     ed.atlas.apply_palette(loaded.colors);
                 }
+                ed.paint_index = std::clamp(ed.paint_index, 0, ed.last_index());
+                ed.select_single_palette(ed.paint_index);
                 ed.bump_art();
             } else {
                 ed.status = loaded.error;
@@ -1679,11 +1952,11 @@ void draw_split_layout(Editor& ed) {
     const float avail_x = ImGui::GetContentRegionAvail().x;
     const float avail_y = ImGui::GetContentRegionAvail().y;
     const float splitter = 8.0f;
-    const float min_side = 280.0f * g_settings.scale;
+    const float min_side = 290.0f * g_settings.scale;
     const float min_canvas = 160.0f * g_settings.scale;
     float side = ed.sidebar_w;
     if (avail_x < min_side + min_canvas + splitter) {
-        side = std::max(160.0f * g_settings.scale, avail_x - min_canvas * 0.5f - splitter);
+        side = std::max(170.0f * g_settings.scale, avail_x - min_canvas * 0.5f - splitter);
     } else {
         side = std::clamp(side, min_side, avail_x - min_canvas - splitter);
     }
@@ -1704,7 +1977,7 @@ void draw_split_layout(Editor& ed) {
     ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
                                               g_settings.dark ? IM_COL32(70, 74, 82, 255) : IM_COL32(170, 176, 186, 255));
     ImGui::SameLine(0, 0);
-    ImGui::BeginChild("side_panel", ImVec2(side, avail_y), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("side_panel", ImVec2(side, avail_y), ImGuiChildFlags_Borders, ImGuiWindowFlags_AlwaysVerticalScrollbar);
     if (ed.art_step()) {
         if (ed.step == Step::Center) {
             draw_preview_grid(ed, "Center tile", 1, 1, false, TilesetDoc::kCenter.x, TilesetDoc::kCenter.y);
@@ -2105,6 +2378,12 @@ int run_editor() {
                 g_ui.show_settings = true;
             }
             if (!io.WantTextInput) {
+                if (ImGui::IsKeyPressed(ImGuiKey_LeftBracket)) {
+                    shift_selected_palette(ed, -1);
+                }
+                if (ImGui::IsKeyPressed(ImGuiKey_RightBracket)) {
+                    shift_selected_palette(ed, 1);
+                }
                 Tool new_tool = ed.tool;
                 if (ImGui::IsKeyPressed(ImGuiKey_1)) new_tool = Tool::Pencil;
                 if (ImGui::IsKeyPressed(ImGuiKey_2)) new_tool = Tool::Eraser;

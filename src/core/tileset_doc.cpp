@@ -70,10 +70,9 @@ Cell TilesetDoc::specialty_context_cell(Cell specialty, int gx, int gy) {
     }
 
     if (specialty == kInnerCorner) {
-        if (gx == 1 && gy == 0) return {1, 0};
-        if (gx == 1 && gy == 2) return {1, 2};
-        if (gx == 0 && gy == 1) return {0, 1};
-        if (gx == 2 && gy == 1) return {2, 1};
+        // Inner corner's surrounding tiles are dynamically rendered from the 12x4 atlas:
+        // North & South: tile (0, 1); West & East: tile (2, 3).
+        // They are read-only preview context, so return {-1, -1} for sheet cell mapping.
         return {-1, -1};
     } else if (specialty == kPillarTop) {
         if (gx == 1 && gy == 2) return kPillarBottom;
