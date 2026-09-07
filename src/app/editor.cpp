@@ -143,16 +143,22 @@ struct Editor {
     Cell sel_a{-1, -1};
     Cell sel_b{-1, -1};
     Clipboard clipboard;
-    bool pasting = false;
-    Cell paste_pos{0, 0};
-    Cell paste_drag_start_pos{0, 0};
-    ImVec2 paste_drag_start_mouse{0.0f, 0.0f};
-    bool paste_dragging = false;
-    bool paste_keyboard_nudge = false;
-    bool sel_moving = false;
-    ImVec2 sel_move_start_mouse{0.0f, 0.0f};
-    Cell sel_move_start_a{-1, -1};
-    Cell sel_move_start_b{-1, -1};
+    enum class FloatingType {
+        None,
+        Paste,
+        MoveSelection
+    };
+    bool floating = false;
+    FloatingType floating_type = FloatingType::None;
+    Cell floating_pos{0, 0};
+    int floating_w = 0;
+    int floating_h = 0;
+    std::vector<uint8_t> floating_pixels;
+    bool floating_dragging = false;
+    Cell floating_drag_start_pos{0, 0};
+    ImVec2 floating_drag_start_mouse{0.0f, 0.0f};
+    Cell move_orig_a{-1, -1};
+    Cell move_orig_b{-1, -1};
 
     int edit_ox = 1, edit_oy = 1, edit_cols = 1, edit_rows = 1;
     int zoom = 16;
@@ -174,7 +180,6 @@ struct Editor {
         sel_a = {-1, -1};
         sel_b = {-1, -1};
         selecting = false;
-        sel_moving = false;
     }
 
     bool in_selection(Cell src) const {
@@ -188,10 +193,27 @@ struct Editor {
         return src.x >= x0 && src.x <= x1 && src.y >= y0 && src.y <= y1;
     }
 
+    bool in_floating_box(Cell c) const {
+        if (!floating) return false;
+        return c.x >= floating_pos.x && c.x < floating_pos.x + floating_w &&
+               c.y >= floating_pos.y && c.y < floating_pos.y + floating_h;
+    }
+
+    void cancel_floating_internal() {
+        if (!floating) return;
+        if (floating_type == FloatingType::MoveSelection) {
+            do_undo();
+            sel_a = move_orig_a;
+            sel_b = move_orig_b;
+        }
+        floating = false;
+        floating_type = FloatingType::None;
+        floating_pixels.clear();
+        floating_dragging = false;
+    }
+
     void configure_view() {
-        pasting = false;
-        paste_dragging = false;
-        paste_keyboard_nudge = false;
+        cancel_floating_internal();
         clear_selection();
         switch (step) {
         case Step::Center:
@@ -621,6 +643,13 @@ void draw_preview_grid(Editor& ed, const char* title, int cols, int rows, bool a
 }
 
 void copy_selection(Editor& ed) {
+    if (ed.floating && !ed.floating_pixels.empty()) {
+        ed.clipboard.w = ed.floating_w;
+        ed.clipboard.h = ed.floating_h;
+        ed.clipboard.pixels = ed.floating_pixels;
+        ed.status = "Copied " + std::to_string(ed.clipboard.w) + "x" + std::to_string(ed.clipboard.h) + " selection.";
+        return;
+    }
     if (ed.sel_a.x < 0 || ed.sel_b.x < 0) {
         return;
     }
@@ -636,48 +665,113 @@ void copy_selection(Editor& ed) {
             const Cell src{x0 + x, y0 + y};
             const Cell cell = ed.src_to_cell(src);
             const Cell loc = ed.src_local(src);
-            ed.clipboard.pixels[static_cast<size_t>(y * ed.clipboard.w + x)] =
-                static_cast<uint8_t>(ed.get_px(cell.x, cell.y, loc.x, loc.y));
+            if (ed.in_doc(cell.x, cell.y)) {
+                ed.clipboard.pixels[static_cast<size_t>(y * ed.clipboard.w + x)] =
+                    static_cast<uint8_t>(ed.get_px(cell.x, cell.y, loc.x, loc.y));
+            } else {
+                ed.clipboard.pixels[static_cast<size_t>(y * ed.clipboard.w + x)] = 0;
+            }
         }
     }
     ed.status = "Copied " + std::to_string(ed.clipboard.w) + "x" + std::to_string(ed.clipboard.h) + " selection.";
 }
 
-void commit_paste(Editor& ed) {
-    if (!ed.pasting) {
+void cancel_floating(Editor& ed) {
+    if (!ed.floating) {
         return;
     }
-    if (!ed.clipboard.valid()) {
-        ed.pasting = false;
-        ed.paste_dragging = false;
-        ed.paste_keyboard_nudge = false;
+    if (ed.floating_type == Editor::FloatingType::MoveSelection) {
+        ed.do_undo();
+        ed.sel_a = ed.move_orig_a;
+        ed.sel_b = ed.move_orig_b;
+    }
+    ed.floating = false;
+    ed.floating_type = Editor::FloatingType::None;
+    ed.floating_pixels.clear();
+    ed.floating_dragging = false;
+    ed.status = "Cancelled.";
+}
+
+void commit_floating(Editor& ed) {
+    if (!ed.floating) {
         return;
     }
-    ed.push_undo();
-    for (int y = 0; y < ed.clipboard.h; ++y) {
-        for (int x = 0; x < ed.clipboard.w; ++x) {
-            const int px = ed.paste_pos.x + x;
-            const int py = ed.paste_pos.y + y;
-            ed.plot_src({px, py}, ed.clipboard.pixels[static_cast<size_t>(y * ed.clipboard.w + x)]);
+    if (ed.floating_type == Editor::FloatingType::MoveSelection) {
+        if (ed.floating_pos.x == ed.move_orig_a.x && ed.floating_pos.y == ed.move_orig_a.y) {
+            ed.do_undo();
+            ed.sel_a = ed.move_orig_a;
+            ed.sel_b = ed.move_orig_b;
+            ed.floating = false;
+            ed.floating_type = Editor::FloatingType::None;
+            ed.floating_pixels.clear();
+            ed.floating_dragging = false;
+            ed.status = "Placed.";
+            return;
+        }
+    }
+    if (ed.floating_type == Editor::FloatingType::Paste) {
+        ed.push_undo();
+    }
+    for (int y = 0; y < ed.floating_h; ++y) {
+        for (int x = 0; x < ed.floating_w; ++x) {
+            const int px = ed.floating_pos.x + x;
+            const int py = ed.floating_pos.y + y;
+            ed.plot_src({px, py}, ed.floating_pixels[static_cast<size_t>(y * ed.floating_w + x)]);
         }
     }
     ed.bump_art();
-    ed.pasting = false;
-    ed.paste_dragging = false;
-    ed.paste_keyboard_nudge = false;
-    ed.sel_a = ed.paste_pos;
-    ed.sel_b = {ed.paste_pos.x + ed.clipboard.w - 1, ed.paste_pos.y + ed.clipboard.h - 1};
-    ed.status = "Pasted at (" + std::to_string(ed.paste_pos.x) + ", " + std::to_string(ed.paste_pos.y) + ").";
+    ed.sel_a = ed.floating_pos;
+    ed.sel_b = {ed.floating_pos.x + ed.floating_w - 1, ed.floating_pos.y + ed.floating_h - 1};
+    ed.floating = false;
+    ed.floating_type = Editor::FloatingType::None;
+    ed.floating_pixels.clear();
+    ed.floating_dragging = false;
+    ed.status = "Placed.";
 }
 
-void cancel_paste(Editor& ed) {
-    if (!ed.pasting) {
+void start_selection_move(Editor& ed) {
+    if (!ed.has_selection()) {
         return;
     }
-    ed.pasting = false;
-    ed.paste_dragging = false;
-    ed.paste_keyboard_nudge = false;
-    ed.status = "Paste cancelled.";
+    if (ed.floating) {
+        commit_floating(ed);
+    }
+    const int x0 = std::min(ed.sel_a.x, ed.sel_b.x);
+    const int y0 = std::min(ed.sel_a.y, ed.sel_b.y);
+    const int x1 = std::max(ed.sel_a.x, ed.sel_b.x);
+    const int y1 = std::max(ed.sel_a.y, ed.sel_b.y);
+    const int w = x1 - x0 + 1;
+    const int h = y1 - y0 + 1;
+
+    ed.push_undo();
+
+    ed.floating = true;
+    ed.floating_type = Editor::FloatingType::MoveSelection;
+    ed.floating_pos = {x0, y0};
+    ed.floating_w = w;
+    ed.floating_h = h;
+    ed.move_orig_a = {x0, y0};
+    ed.move_orig_b = {x1, y1};
+    ed.sel_a = {x0, y0};
+    ed.sel_b = {x1, y1};
+    ed.floating_pixels.resize(static_cast<size_t>(w * h));
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const Cell src{x0 + x, y0 + y};
+            const Cell cell = ed.src_to_cell(src);
+            const Cell loc = ed.src_local(src);
+            if (ed.in_doc(cell.x, cell.y)) {
+                ed.floating_pixels[static_cast<size_t>(y * w + x)] =
+                    static_cast<uint8_t>(ed.get_px(cell.x, cell.y, loc.x, loc.y));
+                ed.set_px(cell.x, cell.y, loc.x, loc.y, 0);
+            } else {
+                ed.floating_pixels[static_cast<size_t>(y * w + x)] = 0;
+            }
+        }
+    }
+    ed.bump_art();
+    ed.status = "Moving selection: Arrow keys or click and drag. Enter or click outside to place, Esc to cancel.";
 }
 
 void start_paste(Editor& ed) {
@@ -685,27 +779,39 @@ void start_paste(Editor& ed) {
         ed.status = "Clipboard is empty.";
         return;
     }
-    if (ed.pasting) {
-        commit_paste(ed);
+    if (ed.floating) {
+        commit_floating(ed);
     }
     ed.tool = Tool::Select;
-    ed.pasting = true;
-    ed.paste_dragging = false;
-    ed.paste_keyboard_nudge = false;
+    ed.floating = true;
+    ed.floating_type = Editor::FloatingType::Paste;
+    ed.floating_w = ed.clipboard.w;
+    ed.floating_h = ed.clipboard.h;
+    ed.floating_pixels = ed.clipboard.pixels;
     const int sw = ed.src_w();
     const int sh = ed.src_h();
-    if (ed.hover.x >= 0 && ed.hover.y >= 0) {
-        ed.paste_pos.x = std::clamp(ed.hover.x - ed.clipboard.w / 2, 0, std::max(0, sw - ed.clipboard.w));
-        ed.paste_pos.y = std::clamp(ed.hover.y - ed.clipboard.h / 2, 0, std::max(0, sh - ed.clipboard.h));
+    if (ed.has_selection()) {
+        ed.floating_pos = {std::min(ed.sel_a.x, ed.sel_b.x), std::min(ed.sel_a.y, ed.sel_b.y)};
+    } else if (ed.hover.x >= 0 && ed.hover.y >= 0) {
+        ed.floating_pos.x = std::clamp(ed.hover.x - ed.floating_w / 2, 0, std::max(0, sw - ed.floating_w));
+        ed.floating_pos.y = std::clamp(ed.hover.y - ed.floating_h / 2, 0, std::max(0, sh - ed.floating_h));
     } else {
-        ed.paste_pos.x = std::clamp((sw - ed.clipboard.w) / 2, 0, std::max(0, sw - ed.clipboard.w));
-        ed.paste_pos.y = std::clamp((sh - ed.clipboard.h) / 2, 0, std::max(0, sh - ed.clipboard.h));
+        ed.floating_pos.x = std::clamp((sw - ed.floating_w) / 2, 0, std::max(0, sw - ed.floating_w));
+        ed.floating_pos.y = std::clamp((sh - ed.floating_h) / 2, 0, std::max(0, sh - ed.floating_h));
     }
-    ed.status = "Paste: Move/drag mouse or arrow keys to position. Click or Enter to place, Esc to cancel.";
+    ed.status = "Paste: Arrow keys or click and drag. Enter or click outside to place, Esc to cancel.";
 }
 
 void paste_clipboard(Editor& ed) {
     start_paste(ed);
+}
+
+void commit_paste(Editor& ed) {
+    commit_floating(ed);
+}
+
+void cancel_paste(Editor& ed) {
+    cancel_floating(ed);
 }
 
 void handle_canvas(Editor& ed) {
@@ -758,59 +864,53 @@ void handle_canvas(Editor& ed) {
         ed.hover = {-1, -1};
     }
 
-    if (ed.pasting) {
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-
+    if (ed.floating) {
         if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-            cancel_paste(ed);
+            cancel_floating(ed);
         } else if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
-            commit_paste(ed);
-        } else {
+            commit_floating(ed);
+        } else if (!ed.floating_dragging) {
             int dx = 0, dy = 0;
             if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))  dx -= 1;
             if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) dx += 1;
             if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))    dy -= 1;
             if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  dy += 1;
             if (dx != 0 || dy != 0) {
-                ed.paste_keyboard_nudge = true;
-                ed.paste_pos.x = std::clamp(ed.paste_pos.x + dx, 0, std::max(0, sw - ed.clipboard.w));
-                ed.paste_pos.y = std::clamp(ed.paste_pos.y + dy, 0, std::max(0, sh - ed.clipboard.h));
+                ed.floating_pos.x = std::clamp(ed.floating_pos.x + dx, 0, std::max(0, sw - ed.floating_w));
+                ed.floating_pos.y = std::clamp(ed.floating_pos.y + dy, 0, std::max(0, sh - ed.floating_h));
             }
         }
 
-        if (ed.pasting) {
+        if (ed.floating) {
             const ImVec2 mpos = ImGui::GetIO().MousePos;
-            const bool hovered = ImGui::IsItemHovered();
-
-            if (hovered && !ed.paste_keyboard_nudge && !ed.paste_dragging) {
-                if (ed.hover.x >= 0 && ed.hover.y >= 0) {
-                    ed.paste_pos.x = std::clamp(ed.hover.x - ed.clipboard.w / 2, 0, std::max(0, sw - ed.clipboard.w));
-                    ed.paste_pos.y = std::clamp(ed.hover.y - ed.clipboard.h / 2, 0, std::max(0, sh - ed.clipboard.h));
-                }
+            const bool inside = ed.in_floating_box(ed.hover);
+            if (inside) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
             }
 
             if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-                ed.paste_dragging = true;
-                ed.paste_drag_start_pos = ed.paste_pos;
-                ed.paste_drag_start_mouse = mpos;
+                if (inside) {
+                    ed.floating_dragging = true;
+                    ed.floating_drag_start_pos = ed.floating_pos;
+                    ed.floating_drag_start_mouse = mpos;
+                } else {
+                    commit_floating(ed);
+                }
             }
 
-            if (ed.paste_dragging && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                const float dmx = mpos.x - ed.paste_drag_start_mouse.x;
-                const float dmy = mpos.y - ed.paste_drag_start_mouse.y;
-                if (std::abs(dmx) > 3.0f || std::abs(dmy) > 3.0f) {
-                    ed.paste_keyboard_nudge = false;
-                }
-                if (!ed.paste_keyboard_nudge && ed.zoom > 0) {
+            if (ed.floating && ed.floating_dragging && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                const float dmx = mpos.x - ed.floating_drag_start_mouse.x;
+                const float dmy = mpos.y - ed.floating_drag_start_mouse.y;
+                if (ed.zoom > 0) {
                     const int dpx = static_cast<int>(std::round(dmx / static_cast<float>(ed.zoom)));
                     const int dpy = static_cast<int>(std::round(dmy / static_cast<float>(ed.zoom)));
-                    ed.paste_pos.x = std::clamp(ed.paste_drag_start_pos.x + dpx, 0, std::max(0, sw - ed.clipboard.w));
-                    ed.paste_pos.y = std::clamp(ed.paste_drag_start_pos.y + dpy, 0, std::max(0, sh - ed.clipboard.h));
+                    ed.floating_pos.x = std::clamp(ed.floating_drag_start_pos.x + dpx, 0, std::max(0, sw - ed.floating_w));
+                    ed.floating_pos.y = std::clamp(ed.floating_drag_start_pos.y + dpy, 0, std::max(0, sh - ed.floating_h));
                 }
             }
 
-            if (ed.paste_dragging && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-                commit_paste(ed);
+            if (ed.floating && ed.floating_dragging && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                ed.floating_dragging = false;
             }
         }
     } else {
@@ -824,14 +924,9 @@ void handle_canvas(Editor& ed) {
             if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))    dy -= 1;
             if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  dy += 1;
             if (dx != 0 || dy != 0) {
-                const int x0 = std::min(ed.sel_a.x, ed.sel_b.x);
-                const int y0 = std::min(ed.sel_a.y, ed.sel_b.y);
-                const int w = std::abs(ed.sel_b.x - ed.sel_a.x) + 1;
-                const int h = std::abs(ed.sel_b.y - ed.sel_a.y) + 1;
-                const int new_x0 = std::clamp(x0 + dx, 0, std::max(0, sw - w));
-                const int new_y0 = std::clamp(y0 + dy, 0, std::max(0, sh - h));
-                ed.sel_a = {new_x0, new_y0};
-                ed.sel_b = {new_x0 + w - 1, new_y0 + h - 1};
+                start_selection_move(ed);
+                ed.floating_pos.x = std::clamp(ed.floating_pos.x + dx, 0, std::max(0, sw - ed.floating_w));
+                ed.floating_pos.y = std::clamp(ed.floating_pos.y + dy, 0, std::max(0, sh - ed.floating_h));
             }
         }
 
@@ -845,14 +940,10 @@ void handle_canvas(Editor& ed) {
         if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && ed.hover.x >= 0) {
             if (ed.tool == Tool::Select) {
                 if (ed.has_selection() && ed.in_selection(ed.hover)) {
-                    ed.sel_moving = true;
-                    ed.sel_move_start_mouse = ImGui::GetIO().MousePos;
-                    const int x0 = std::min(ed.sel_a.x, ed.sel_b.x);
-                    const int y0 = std::min(ed.sel_a.y, ed.sel_b.y);
-                    const int x1 = std::max(ed.sel_a.x, ed.sel_b.x);
-                    const int y1 = std::max(ed.sel_a.y, ed.sel_b.y);
-                    ed.sel_move_start_a = {x0, y0};
-                    ed.sel_move_start_b = {x1, y1};
+                    start_selection_move(ed);
+                    ed.floating_dragging = true;
+                    ed.floating_drag_start_pos = ed.floating_pos;
+                    ed.floating_drag_start_mouse = ImGui::GetIO().MousePos;
                 } else {
                     const ImVec2 mp = ImGui::GetIO().MousePos;
                     const float lx = mp.x - origin.x;
@@ -930,21 +1021,6 @@ void handle_canvas(Editor& ed) {
                 ed.bump_art();
             }
         }
-        if (ed.sel_moving && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-            const ImVec2 mpos = ImGui::GetIO().MousePos;
-            const float dmx = mpos.x - ed.sel_move_start_mouse.x;
-            const float dmy = mpos.y - ed.sel_move_start_mouse.y;
-            if (ed.zoom > 0) {
-                const int dpx = static_cast<int>(std::round(dmx / static_cast<float>(ed.zoom)));
-                const int dpy = static_cast<int>(std::round(dmy / static_cast<float>(ed.zoom)));
-                const int w = ed.sel_move_start_b.x - ed.sel_move_start_a.x + 1;
-                const int h = ed.sel_move_start_b.y - ed.sel_move_start_a.y + 1;
-                const int new_x0 = std::clamp(ed.sel_move_start_a.x + dpx, 0, std::max(0, sw - w));
-                const int new_y0 = std::clamp(ed.sel_move_start_a.y + dpy, 0, std::max(0, sh - h));
-                ed.sel_a = {new_x0, new_y0};
-                ed.sel_b = {new_x0 + w - 1, new_y0 + h - 1};
-            }
-        }
         if (ed.selecting && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             const ImVec2 mp = ImGui::GetIO().MousePos;
             const float lx = mp.x - origin.x;
@@ -958,13 +1034,20 @@ void handle_canvas(Editor& ed) {
             ed.stroke_to = ed.hover;
         }
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-            if (ed.sel_moving) {
-                ed.sel_moving = false;
-            }
             if (ed.selecting) {
                 ed.selecting = false;
-                if (ed.sel_a.x == ed.sel_b.x && ed.sel_a.y == ed.sel_b.y) {
+                const bool dragged = ImGui::GetIO().MouseDragMaxDistanceSqr[0] >= 9.0f;
+                if (!dragged && ed.sel_a.x == ed.sel_b.x && ed.sel_a.y == ed.sel_b.y) {
                     ed.clear_selection();
+                } else {
+                    const int x0 = std::min(ed.sel_a.x, ed.sel_b.x);
+                    const int y0 = std::min(ed.sel_a.y, ed.sel_b.y);
+                    const int x1 = std::max(ed.sel_a.x, ed.sel_b.x);
+                    const int y1 = std::max(ed.sel_a.y, ed.sel_b.y);
+                    ed.sel_a = {x0, y0};
+                    ed.sel_b = {x1, y1};
+                    ed.status = "Selected " + std::to_string(x1 - x0 + 1) + "x" + std::to_string(y1 - y0 + 1) +
+                                ". Arrow keys or click and drag to move.";
                 }
             }
             if (ed.stroke_pending && ed.stroke_from.x >= 0) {
@@ -991,17 +1074,17 @@ void handle_canvas(Editor& ed) {
         }
     }
 
-    if (ed.pasting && ed.clipboard.valid()) {
+    if (ed.floating && !ed.floating_pixels.empty()) {
         for (int ry = 0; ry < reps; ++ry) {
             for (int rx = 0; rx < reps; ++rx) {
                 const ImVec2 to(origin.x + static_cast<float>(rx * sw * ed.zoom),
                                 origin.y + static_cast<float>(ry * sh * ed.zoom));
-                for (int y = 0; y < ed.clipboard.h; ++y) {
-                    for (int x = 0; x < ed.clipboard.w; ++x) {
-                        const int px = ed.paste_pos.x + x;
-                        const int py = ed.paste_pos.y + y;
+                for (int y = 0; y < ed.floating_h; ++y) {
+                    for (int x = 0; x < ed.floating_w; ++x) {
+                        const int px = ed.floating_pos.x + x;
+                        const int py = ed.floating_pos.y + y;
                         if (px < 0 || px >= sw || py < 0 || py >= sh) continue;
-                        const uint8_t c_idx = ed.clipboard.pixels[static_cast<size_t>(y * ed.clipboard.w + x)];
+                        const uint8_t c_idx = ed.floating_pixels[static_cast<size_t>(y * ed.floating_w + x)];
                         const Rgb c = ed.color(c_idx);
                         const ImVec2 p0(to.x + static_cast<float>(px * ed.zoom),
                                         to.y + static_cast<float>(py * ed.zoom));
@@ -1010,10 +1093,10 @@ void handle_canvas(Editor& ed) {
                         dl->AddRectFilled(p0, p1, im_color(c, 240));
                     }
                 }
-                const ImVec2 b0(to.x + static_cast<float>(ed.paste_pos.x * ed.zoom),
-                                to.y + static_cast<float>(ed.paste_pos.y * ed.zoom));
-                const ImVec2 b1(to.x + static_cast<float>((ed.paste_pos.x + ed.clipboard.w) * ed.zoom),
-                                to.y + static_cast<float>((ed.paste_pos.y + ed.clipboard.h) * ed.zoom));
+                const ImVec2 b0(to.x + static_cast<float>(ed.floating_pos.x * ed.zoom),
+                                to.y + static_cast<float>(ed.floating_pos.y * ed.zoom));
+                const ImVec2 b1(to.x + static_cast<float>((ed.floating_pos.x + ed.floating_w) * ed.zoom),
+                                to.y + static_cast<float>((ed.floating_pos.y + ed.floating_h) * ed.zoom));
                 dl->AddRect(ImVec2(b0.x - 1.0f, b0.y - 1.0f), ImVec2(b1.x + 1.0f, b1.y + 1.0f),
                             IM_COL32(0, 0, 0, 180), 0.0f, 0, 1.0f);
                 dl->AddRect(b0, b1, IM_COL32(255, 220, 60, 255), 0.0f, 0, 2.0f);
@@ -1924,42 +2007,52 @@ int run_editor() {
             }
         }
         if (g_ui.project_open) {
-            if (ed.pasting) {
+            if (ed.floating) {
                 if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-                    cancel_paste(ed);
+                    cancel_floating(ed);
                 }
                 if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
-                    commit_paste(ed);
+                    commit_floating(ed);
                 }
             }
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_Z)) {
-                if (ed.pasting) {
-                    cancel_paste(ed);
+                if (ed.floating) {
+                    cancel_floating(ed);
                 } else {
                     ed.do_undo();
                 }
             }
-            if (cmd && ImGui::IsKeyPressed(ImGuiKey_C) && (ed.tool == Tool::Select || ed.sel_a.x >= 0)) {
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_C) && (ed.tool == Tool::Select || ed.sel_a.x >= 0 || ed.floating)) {
                 copy_selection(ed);
             }
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_V)) {
                 start_paste(ed);
             }
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_D)) {
+                if (ed.floating) {
+                    commit_floating(ed);
+                }
                 ed.clear_selection();
             }
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_Comma)) {
                 g_ui.show_settings = true;
             }
-            if (!io.WantTextInput && !ed.pasting) {
-                if (ImGui::IsKeyPressed(ImGuiKey_1)) ed.tool = Tool::Pencil;
-                if (ImGui::IsKeyPressed(ImGuiKey_2)) ed.tool = Tool::Eraser;
-                if (ImGui::IsKeyPressed(ImGuiKey_3)) ed.tool = Tool::Fill;
-                if (ImGui::IsKeyPressed(ImGuiKey_4)) ed.tool = Tool::Line;
-                if (ImGui::IsKeyPressed(ImGuiKey_5)) ed.tool = Tool::Square;
-                if (ImGui::IsKeyPressed(ImGuiKey_6)) ed.tool = Tool::Circle;
-                if (ImGui::IsKeyPressed(ImGuiKey_7)) ed.tool = Tool::Eyedropper;
-                if (ImGui::IsKeyPressed(ImGuiKey_8)) ed.tool = Tool::Select;
+            if (!io.WantTextInput) {
+                Tool new_tool = ed.tool;
+                if (ImGui::IsKeyPressed(ImGuiKey_1)) new_tool = Tool::Pencil;
+                if (ImGui::IsKeyPressed(ImGuiKey_2)) new_tool = Tool::Eraser;
+                if (ImGui::IsKeyPressed(ImGuiKey_3)) new_tool = Tool::Fill;
+                if (ImGui::IsKeyPressed(ImGuiKey_4)) new_tool = Tool::Line;
+                if (ImGui::IsKeyPressed(ImGuiKey_5)) new_tool = Tool::Square;
+                if (ImGui::IsKeyPressed(ImGuiKey_6)) new_tool = Tool::Circle;
+                if (ImGui::IsKeyPressed(ImGuiKey_7)) new_tool = Tool::Eyedropper;
+                if (ImGui::IsKeyPressed(ImGuiKey_8)) new_tool = Tool::Select;
+                if (new_tool != ed.tool) {
+                    if (ed.floating && new_tool != Tool::Select) {
+                        commit_floating(ed);
+                    }
+                    ed.tool = new_tool;
+                }
             }
         }
 
@@ -1975,6 +2068,9 @@ int run_editor() {
             ImGui::BeginGroup();
             ImGui::BeginDisabled(ed.step == Step::Center);
             if (ImGui::Button("Back", ImVec2(88, 0))) {
+                if (ed.floating) {
+                    commit_floating(ed);
+                }
                 ed.go_back();
             }
             ImGui::EndDisabled();
@@ -1988,6 +2084,9 @@ int run_editor() {
             ImGui::SameLine();
             ImGui::BeginDisabled(ed.step == Step::Variants);
             if (ImGui::Button("Next", ImVec2(88, 0))) {
+                if (ed.floating) {
+                    commit_floating(ed);
+                }
                 ed.go_next();
             }
             ImGui::EndDisabled();
@@ -2034,8 +2133,8 @@ int run_editor() {
                     ImGui::SameLine();
                 }
                 if (tool_button(t, ed.tool)) {
-                    if (ed.pasting && t != Tool::Select) {
-                        cancel_paste(ed);
+                    if (ed.floating && t != Tool::Select) {
+                        commit_floating(ed);
                     }
                     ed.tool = t;
                 }
@@ -2044,7 +2143,11 @@ int run_editor() {
             row_rule();
 
             if (ImGui::Button("Undo")) {
-                ed.do_undo();
+                if (ed.floating) {
+                    cancel_floating(ed);
+                } else {
+                    ed.do_undo();
+                }
             }
             if (ed.has_selection() && ed.tool != Tool::Select) {
                 ImGui::SameLine(0, 16);
@@ -2074,14 +2177,14 @@ int run_editor() {
                 }
             }
             if (ed.tool == Tool::Select) {
-                if (ed.pasting) {
+                if (ed.floating) {
                     ImGui::SameLine(0, 16);
                     if (ImGui::Button("Apply (Enter)")) {
-                        commit_paste(ed);
+                        commit_floating(ed);
                     }
                     ImGui::SameLine();
                     if (ImGui::Button("Cancel (Esc)")) {
-                        cancel_paste(ed);
+                        cancel_floating(ed);
                     }
                 } else {
                     ImGui::SameLine(0, 16);
