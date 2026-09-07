@@ -250,6 +250,7 @@ void test_settings_file() {
     s.window_h = 900;
     s.window_maximized = true;
     s.window_placed = true;
+    s.pixel_grid = false;
     s.extra.emplace_back("future_flag", "ok");
 
     const std::string text = format_settings(s);
@@ -257,6 +258,7 @@ void test_settings_file() {
     expect(text.find("scale=1.25") != std::string::npos, "settings should write scale");
     expect(text.find("window_x=40") != std::string::npos, "settings should write window_x");
     expect(text.find("window_maximized=true") != std::string::npos, "settings should write maximized");
+    expect(text.find("pixel_grid=false") != std::string::npos, "settings should write pixel_grid");
     expect(text.find("future_flag=ok") != std::string::npos, "settings should keep unknown keys");
 #define X(type, name, def, kind, key) \
     expect(text.find(std::string(key) + "=") != std::string::npos, "settings missing " key);
@@ -270,6 +272,7 @@ void test_settings_file() {
     expect(loaded.window_x == 40 && loaded.window_y == 80, "roundtrip window pos");
     expect(loaded.window_w == 1600 && loaded.window_h == 900, "roundtrip window size");
     expect(loaded.window_maximized && loaded.window_placed, "roundtrip window flags");
+    expect(!loaded.pixel_grid, "roundtrip pixel_grid");
     expect(loaded.extra.size() == 1 && loaded.extra[0].first == "future_flag" && loaded.extra[0].second == "ok",
            "roundtrip extra key");
 
@@ -296,7 +299,8 @@ void test_settings_file() {
     expect(save_settings_file(s, path), "save settings file");
     Settings from_disk;
     expect(load_settings_file(from_disk, path), "load settings file");
-    expect(!from_disk.dark && from_disk.window_placed && from_disk.extra.size() == 1, "disk roundtrip");
+    expect(!from_disk.dark && from_disk.window_placed && !from_disk.pixel_grid && from_disk.extra.size() == 1,
+           "disk roundtrip");
     std::remove(path.c_str());
 }
 

@@ -10,6 +10,7 @@ namespace tsm {
 #define TSM_SETTINGS_FIELDS(X)                      \
     X(bool, dark, true, Theme, "theme")             \
     X(float, scale, 1.0f, Float, "scale")           \
+    X(bool, pixel_grid, true, Bool, "pixel_grid")   \
     X(int, window_x, 0, Int, "window_x")            \
     X(int, window_y, 0, Int, "window_y")            \
     X(int, window_w, 1280, Int, "window_w")         \

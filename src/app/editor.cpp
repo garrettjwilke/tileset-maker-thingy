@@ -486,8 +486,16 @@ ImU32 grid_color() {
     return g_settings.dark ? IM_COL32(255, 255, 255, 48) : IM_COL32(20, 24, 32, 55);
 }
 
+ImU32 canvas_tile_grid_color() {
+    return g_settings.dark ? IM_COL32(245, 248, 255, 230) : IM_COL32(10, 12, 18, 220);
+}
+
+ImU32 canvas_pixel_grid_color() {
+    return g_settings.dark ? IM_COL32(235, 240, 250, 110) : IM_COL32(24, 28, 36, 120);
+}
+
 void draw_pixels(ImDrawList* dl, ImVec2 origin, int zoom, int w, int h, const Editor& ed, int ox, int oy, int cols,
-                 int rows, bool atlas, ImU32 grid_col) {
+                 int rows, bool atlas, ImU32 grid_col, float grid_thickness = 1.0f, bool pixel_grid = false) {
     const int ts = atlas ? ed.atlas.tile_size : ed.doc.tile_size;
     if (ts <= 0 || zoom <= 0) {
         return;
@@ -505,13 +513,32 @@ void draw_pixels(ImDrawList* dl, ImVec2 origin, int zoom, int w, int h, const Ed
             dl->AddRectFilled(p0, p1, im_color(c));
         }
     }
+    const float drawn_w = static_cast<float>(w * zoom);
+    const float drawn_h = static_cast<float>(h * zoom);
+    if (pixel_grid && zoom >= 3) {
+        const ImU32 pixel_col = canvas_pixel_grid_color();
+        for (int y = 1; y < h; ++y) {
+            if (y % ts == 0) {
+                continue;
+            }
+            const float py = origin.y + static_cast<float>(y * zoom);
+            dl->AddLine(ImVec2(origin.x, py), ImVec2(origin.x + drawn_w, py), pixel_col);
+        }
+        for (int x = 1; x < w; ++x) {
+            if (x % ts == 0) {
+                continue;
+            }
+            const float px = origin.x + static_cast<float>(x * zoom);
+            dl->AddLine(ImVec2(px, origin.y), ImVec2(px, origin.y + drawn_h), pixel_col);
+        }
+    }
     for (int row = 0; row <= rows; ++row) {
         const float y = origin.y + static_cast<float>(row * ts * zoom);
-        dl->AddLine(ImVec2(origin.x, y), ImVec2(origin.x + static_cast<float>(w * zoom), y), grid_col);
+        dl->AddLine(ImVec2(origin.x, y), ImVec2(origin.x + drawn_w, y), grid_col, grid_thickness);
     }
     for (int col = 0; col <= cols; ++col) {
         const float x = origin.x + static_cast<float>(col * ts * zoom);
-        dl->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + static_cast<float>(h * zoom)), grid_col);
+        dl->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + drawn_h), grid_col, grid_thickness);
     }
 }
 
@@ -570,7 +597,7 @@ void handle_canvas(Editor& ed) {
             const ImVec2 o(origin.x + static_cast<float>(rx * sw * ed.zoom),
                             origin.y + static_cast<float>(ry * sh * ed.zoom));
             draw_pixels(dl, o, ed.zoom, sw, sh, ed, ed.edit_ox, ed.edit_oy, ed.edit_cols, ed.edit_rows, !ed.art_step(),
-                        grid_color());
+                        canvas_tile_grid_color(), 2.0f, g_settings.pixel_grid);
         }
     }
 
@@ -1081,13 +1108,20 @@ void draw_settings_controls() {
         persist_settings();
     }
     ImGui::TextDisabled("Drag to preview. Applies to the whole interface.");
+    row_rule();
+    ImGui::TextUnformatted("Canvas");
+    ImGui::Spacing();
+    if (ImGui::Checkbox("Pixel grid", &g_settings.pixel_grid)) {
+        persist_settings();
+    }
+    ImGui::TextDisabled("Shows a line between every pixel in the drawing area.");
 }
 
 void draw_settings_window() {
     if (!g_ui.show_settings) {
         return;
     }
-    ImGui::SetNextWindowSize(ImVec2(420, 240), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420, 320), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Settings", &g_ui.show_settings)) {
         ImGui::End();
         return;
@@ -1495,6 +1529,11 @@ int run_editor() {
                 ImGui::SetNextItemWidth(220.0f);
                 if (ImGui::SliderFloat("##menuscale", &percent, 75.0f, 200.0f, "%.0f%%")) {
                     g_settings.scale = percent / 100.0f;
+                    persist_settings();
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Pixel grid", nullptr, g_settings.pixel_grid)) {
+                    g_settings.pixel_grid = !g_settings.pixel_grid;
                     persist_settings();
                 }
                 ImGui::Separator();
