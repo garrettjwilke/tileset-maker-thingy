@@ -7,6 +7,7 @@
 #include "core/io.h"
 #include "core/md_color.h"
 #include "core/palette_presets.h"
+#include "core/project.h"
 #include "core/tileset_doc.h"
 
 #include "imgui.h"
@@ -30,12 +31,14 @@ using tsm::AtlasDoc;
 using tsm::Cell;
 using tsm::MdColor;
 using tsm::PalettePresets;
+using tsm::ProjectData;
+using tsm::ProjectStep;
 using tsm::Rgb;
 using tsm::TilesetDoc;
-using tsm::VariantBinding;
 
 enum class Step { Center, Edges, Specialty, Variants };
 enum class Tool { Pencil, Eraser, Fill, Line, Square, Circle, Eyedropper, Select };
+enum class PendingAction { None, New, Open, Quit };
 
 const char* tool_name(Tool t) {
     switch (t) {
@@ -59,6 +62,41 @@ ImU32 im_color(Rgb c, int a = 255) {
     return IM_COL32(c.r, c.g, c.b, a);
 }
 
+std::string trim_copy(const char* s) {
+    std::string t = s ? s : "";
+    const auto a = t.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) {
+        return {};
+    }
+    const auto b = t.find_last_not_of(" \t\r\n");
+    return t.substr(a, b - a + 1);
+}
+
+std::string dirname_of(const std::string& path) {
+    const auto slash = path.find_last_of("/\\");
+    return (slash == std::string::npos) ? std::string() : path.substr(0, slash);
+}
+
+ProjectStep project_step_from(Step step) {
+    switch (step) {
+    case Step::Edges: return ProjectStep::Edges;
+    case Step::Specialty: return ProjectStep::Specialty;
+    case Step::Variants: return ProjectStep::Variants;
+    case Step::Center:
+    default: return ProjectStep::Center;
+    }
+}
+
+Step step_from_project(ProjectStep step) {
+    switch (step) {
+    case ProjectStep::Edges: return Step::Edges;
+    case ProjectStep::Specialty: return Step::Specialty;
+    case ProjectStep::Variants: return Step::Variants;
+    case ProjectStep::Center:
+    default: return Step::Center;
+    }
+}
+
 struct Clipboard {
     int w = 0;
     int h = 0;
@@ -80,8 +118,10 @@ struct Editor {
     Cell preview_sel{1, 1};
 
     char project_name[64] = "untitled";
+    std::string project_path;
     std::string status = "Paint the center fill tile.";
     std::string last_dir;
+    bool dirty = false;
 
     Tool tool = Tool::Pencil;
     int paint_index = 1;
@@ -91,6 +131,7 @@ struct Editor {
     bool export_terrain = true;
     bool export_5x3 = true;
     float variant_chance = 0.3f;
+    float sidebar_w = 320.0f;
 
     bool dragging = false;
     bool selecting = false;
@@ -105,7 +146,12 @@ struct Editor {
     int edit_ox = 1, edit_oy = 1, edit_cols = 1, edit_rows = 1;
     int zoom = 16;
 
-    void bump_art() { ++art_rev; }
+    void touch() { dirty = true; }
+
+    void bump_art() {
+        ++art_rev;
+        dirty = true;
+    }
 
     bool art_step() const { return step != Step::Variants; }
 
@@ -252,6 +298,7 @@ struct Editor {
             step = Step::Variants;
             status = "5x3 converted to a 12x4 atlas. Click a tile to edit it, or add a variant.";
         }
+        touch();
         configure_view();
     }
 
@@ -263,10 +310,11 @@ struct Editor {
         } else if (step == Step::Variants) {
             step = Step::Specialty;
         }
+        touch();
         configure_view();
     }
 
-    std::string export_all() {
+    std::string ensure_atlas() {
         if (!has_atlas || atlas_rev != art_rev) {
             const std::string err = tsm::convert_tileset_to_atlas(doc, atlas);
             if (!err.empty()) {
@@ -275,19 +323,27 @@ struct Editor {
             has_atlas = true;
             atlas_rev = art_rev;
         }
+        return {};
+    }
+
+    std::string export_all() {
+        const std::string prep = ensure_atlas();
+        if (!prep.empty()) {
+            return prep;
+        }
         nfdu8filteritem_t filter = {"PNG", "png"};
         nfdu8char_t* path = nullptr;
         const nfdresult_t r = NFD_SaveDialogU8(&path, &filter, 1, last_dir.empty() ? nullptr : last_dir.c_str(),
                                                (std::string(project_name) + ".png").c_str());
         if (r != NFD_OKAY) {
-            return r == NFD_CANCEL ? std::string() : "Save cancelled or failed";
+            return r == NFD_CANCEL ? std::string("#cancel") : "Save cancelled or failed";
         }
         std::string dest = path;
         NFD_FreePathU8(path);
         if (dest.size() < 4 || dest.substr(dest.size() - 4) != ".png") {
             dest += ".png";
         }
-        last_dir = dest.substr(0, dest.find_last_of("/\\"));
+        last_dir = dirname_of(dest);
         std::string err = tsm::save_atlas_png(atlas, dest);
         if (!err.empty()) {
             return err;
@@ -314,10 +370,111 @@ struct Editor {
         }
         return {};
     }
+
+    ProjectData to_project() const {
+        ProjectData data;
+        data.name = project_name;
+        data.step = project_step_from(step);
+        data.seeded = seeded;
+        data.stamped = stamped;
+        data.specialty = specialty;
+        data.atlas_cell = atlas_cell;
+        data.preview_sel = preview_sel;
+        data.tile_mode = tile_mode;
+        data.export_header = export_header;
+        data.export_terrain = export_terrain;
+        data.export_5x3 = export_5x3;
+        data.art_rev = art_rev;
+        data.atlas_rev = atlas_rev;
+        data.has_atlas = has_atlas;
+        data.tileset = doc.snapshot();
+        if (has_atlas) {
+            data.atlas = atlas.snapshot();
+        }
+        return data;
+    }
+
+    void apply_project(const ProjectData& data, const std::string& path) {
+        doc.restore(data.tileset);
+        if (data.has_atlas) {
+            atlas.restore(data.atlas);
+        } else {
+            atlas.reset(data.tileset.tile_size);
+        }
+        has_atlas = data.has_atlas;
+        art_rev = data.art_rev;
+        atlas_rev = data.atlas_rev;
+        step = step_from_project(data.step);
+        seeded = data.seeded;
+        stamped = data.stamped;
+        specialty = data.specialty;
+        atlas_cell = data.atlas_cell;
+        preview_sel = data.preview_sel;
+        tile_mode = data.tile_mode;
+        export_header = data.export_header;
+        export_terrain = data.export_terrain;
+        export_5x3 = data.export_5x3;
+        std::snprintf(project_name, sizeof(project_name), "%s", data.name.c_str());
+        project_path = path;
+        if (!path.empty()) {
+            last_dir = dirname_of(path);
+        }
+        dirty = false;
+        status = "Loaded project.";
+        configure_view();
+    }
+
+    void reset_new(const std::string& name, int size) {
+        const float keep_side = sidebar_w;
+        *this = Editor();
+        sidebar_w = keep_side;
+        std::snprintf(project_name, sizeof(project_name), "%s", name.c_str());
+        doc.reset(size);
+        atlas.reset(size);
+        dirty = false;
+        status = "Paint the center fill tile.";
+        configure_view();
+    }
+
+    std::string save_project(bool save_as) {
+        if (!save_as && !project_path.empty()) {
+            const std::string err = tsm::save_project(to_project(), project_path);
+            if (err.empty()) {
+                dirty = false;
+            }
+            return err;
+        }
+        nfdu8filteritem_t filter = {"Tileset project", "tilesetproj"};
+        nfdu8char_t* path = nullptr;
+        const std::string def = std::string(project_name) + ".tilesetproj";
+        const nfdresult_t r = NFD_SaveDialogU8(&path, &filter, 1, last_dir.empty() ? nullptr : last_dir.c_str(),
+                                               def.c_str());
+        if (r != NFD_OKAY) {
+            return r == NFD_CANCEL ? std::string("#cancel") : "Save cancelled or failed";
+        }
+        std::string dest = tsm::with_tilesetproj_ext(path);
+        NFD_FreePathU8(path);
+        last_dir = dirname_of(dest);
+        const std::string err = tsm::save_project(to_project(), dest);
+        if (err.empty()) {
+            project_path = dest;
+            dirty = false;
+        }
+        return err;
+    }
 };
 
 struct UiState {
     bool show_settings = false;
+    bool show_export = false;
+    bool show_new = false;
+    bool show_unsaved = false;
+    bool project_open = false;
+    bool new_from_welcome = true;
+    PendingAction pending = PendingAction::None;
+    int export_zoom = 4;
+    char new_name[64] = "";
+    int new_tile_size = 16;
 };
 
 UiState g_ui;
@@ -329,9 +486,12 @@ ImU32 grid_color() {
     return g_settings.dark ? IM_COL32(255, 255, 255, 48) : IM_COL32(20, 24, 32, 55);
 }
 
-void draw_pixels(ImDrawList* dl, ImVec2 origin, int zoom, int w, int h, const Editor& ed, int ox, int oy,
-                 int cols, int rows, bool atlas, ImU32 grid_col) {
-    const int ts = ed.tile_size();
+void draw_pixels(ImDrawList* dl, ImVec2 origin, int zoom, int w, int h, const Editor& ed, int ox, int oy, int cols,
+                 int rows, bool atlas, ImU32 grid_col) {
+    const int ts = atlas ? ed.atlas.tile_size : ed.doc.tile_size;
+    if (ts <= 0 || zoom <= 0) {
+        return;
+    }
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const int col = ox + x / ts;
@@ -358,7 +518,8 @@ void draw_pixels(ImDrawList* dl, ImVec2 origin, int zoom, int w, int h, const Ed
 void draw_preview_grid(Editor& ed, const char* title, int cols, int rows, bool atlas) {
     ImGui::TextUnformatted(title);
     const int ts = ed.tile_size();
-    const int z = std::max(4, 48 / ts);
+    const float avail_w = ImGui::GetContentRegionAvail().x;
+    const int z = std::max(1, static_cast<int>(avail_w / static_cast<float>(std::max(1, cols * ts))));
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const ImVec2 size(static_cast<float>(cols * ts * z), static_cast<float>(rows * ts * z));
     ImGui::InvisibleButton("preview", size);
@@ -390,14 +551,24 @@ void handle_canvas(Editor& ed) {
     const int sw = ed.src_w();
     const int sh = ed.src_h();
     const int reps = ed.reps();
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const ImVec2 size(static_cast<float>(sw * reps * ed.zoom), static_cast<float>(sh * reps * ed.zoom));
-    ImGui::InvisibleButton("canvas", size);
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const int src_px_w = std::max(1, sw * reps);
+    const int src_px_h = std::max(1, sh * reps);
+    const float pad = 8.0f;
+    const int zx = static_cast<int>((avail.x - pad) / static_cast<float>(src_px_w));
+    const int zy = static_cast<int>((avail.y - pad) / static_cast<float>(src_px_h));
+    ed.zoom = std::max(1, std::min(zx, zy));
+    const float drawn_w = static_cast<float>(src_px_w * ed.zoom);
+    const float drawn_h = static_cast<float>(src_px_h * ed.zoom);
+    const ImVec2 cursor = ImGui::GetCursorScreenPos();
+    const ImVec2 origin(cursor.x + std::max(0.0f, (avail.x - drawn_w) * 0.5f),
+                        cursor.y + std::max(0.0f, (avail.y - drawn_h) * 0.5f));
+    ImGui::InvisibleButton("canvas", ImVec2(std::max(1.0f, avail.x), std::max(1.0f, avail.y)));
     ImDrawList* dl = ImGui::GetWindowDrawList();
     for (int ry = 0; ry < reps; ++ry) {
         for (int rx = 0; rx < reps; ++rx) {
             const ImVec2 o(origin.x + static_cast<float>(rx * sw * ed.zoom),
-                           origin.y + static_cast<float>(ry * sh * ed.zoom));
+                            origin.y + static_cast<float>(ry * sh * ed.zoom));
             draw_pixels(dl, o, ed.zoom, sw, sh, ed, ed.edit_ox, ed.edit_oy, ed.edit_cols, ed.edit_rows, !ed.art_step(),
                         grid_color());
         }
@@ -503,9 +674,9 @@ void handle_canvas(Editor& ed) {
     }
     if (ed.stroke_pending && ed.stroke_from.x >= 0) {
         const Rgb c = ed.color(ed.paint_index);
-        std::vector<Cell> pts = (ed.tool == Tool::Square) ? tsm::rect_outline(ed.stroke_from, ed.stroke_to)
-                               : (ed.tool == Tool::Circle) ? tsm::ellipse_outline(ed.stroke_from, ed.stroke_to)
-                                                           : tsm::bresenham(ed.stroke_from, ed.stroke_to);
+        std::vector<Cell> pts = (ed.tool == Tool::Square)   ? tsm::rect_outline(ed.stroke_from, ed.stroke_to)
+                                : (ed.tool == Tool::Circle) ? tsm::ellipse_outline(ed.stroke_from, ed.stroke_to)
+                                                            : tsm::bresenham(ed.stroke_from, ed.stroke_to);
         for (Cell p : pts) {
             for (int dy = 0; dy < ed.brush; ++dy) {
                 for (int dx = 0; dx < ed.brush; ++dx) {
@@ -523,20 +694,29 @@ void handle_canvas(Editor& ed) {
 void draw_palette(Editor& ed) {
     const int n = ed.art_step() ? ed.doc.palette_count() : ed.atlas.palette_count();
     ImGui::Text("Palette (%d)", n);
-    for (int i = 0; i < n; ++i) {
-        const Rgb c = ed.color(i);
-        float col[3] = {c.r / 255.0f, c.g / 255.0f, c.b / 255.0f};
-        ImGui::PushID(i);
-        if (ImGui::ColorButton("##sw", ImVec4(col[0], col[1], col[2], 1), ImGuiColorEditFlags_NoTooltip,
-                               ImVec2(22, 22))) {
-            ed.paint_index = i;
-        }
-        if (ed.paint_index == i) {
-            ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
-                                                IM_COL32(255, 220, 60, 255), 0, 0, 2.0f);
-        }
-        if (i + 1 < n) {
+    const float swatch = 22.0f * g_settings.scale;
+    for (int i = 0; i < TilesetDoc::kPaletteSize; ++i) {
+        if (i % 8 != 0) {
             ImGui::SameLine();
+        }
+        ImGui::PushID(i);
+        if (i < n) {
+            const Rgb c = ed.color(i);
+            float col[3] = {c.r / 255.0f, c.g / 255.0f, c.b / 255.0f};
+            if (ImGui::ColorButton("##sw", ImVec4(col[0], col[1], col[2], 1), ImGuiColorEditFlags_NoTooltip,
+                                   ImVec2(swatch, swatch))) {
+                ed.paint_index = i;
+            }
+            if (ed.paint_index == i) {
+                ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                                    IM_COL32(255, 220, 60, 255), 0, 0, 2.0f);
+            }
+        } else {
+            const ImVec2 p0 = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(swatch, swatch));
+            const ImVec2 p1(p0.x + swatch, p0.y + swatch);
+            ImGui::GetWindowDrawList()->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 40));
+            ImGui::GetWindowDrawList()->AddRect(p0, p1, grid_color());
         }
         ImGui::PopID();
     }
@@ -556,6 +736,7 @@ void draw_palette(Editor& ed) {
             } else {
                 ed.atlas.set_palette_color(ed.paint_index, next);
             }
+            ed.bump_art();
         }
     }
     if (ImGui::BeginCombo("Preset", "Apply preset")) {
@@ -569,6 +750,7 @@ void draw_palette(Editor& ed) {
                     ed.atlas.apply_palette(colors);
                 }
                 ed.paint_index = std::min(ed.paint_index, ed.last_index());
+                ed.bump_art();
             }
         }
         ImGui::EndCombo();
@@ -579,6 +761,7 @@ void draw_palette(Editor& ed) {
         } else {
             ed.atlas.grow_palette();
         }
+        ed.touch();
     }
     ImGui::SameLine();
     if (ImGui::Button("Compact unused")) {
@@ -588,6 +771,7 @@ void draw_palette(Editor& ed) {
         } else {
             ed.atlas.compact_unused();
         }
+        ed.bump_art();
     }
     if (ImGui::Button("Load .palette")) {
         nfdu8filteritem_t filter = {"Palette", "palette"};
@@ -602,6 +786,7 @@ void draw_palette(Editor& ed) {
                 } else {
                     ed.atlas.apply_palette(loaded.colors);
                 }
+                ed.bump_art();
             } else {
                 ed.status = loaded.error;
             }
@@ -911,6 +1096,275 @@ void draw_settings_window() {
     ImGui::End();
 }
 
+void open_new_project_dialog(bool from_welcome) {
+    g_ui.show_new = true;
+    g_ui.new_from_welcome = from_welcome;
+    g_ui.new_name[0] = 0;
+    g_ui.new_tile_size = 16;
+}
+
+bool try_open_project(Editor& ed) {
+    nfdu8filteritem_t filter = {"Tileset project", "tilesetproj"};
+    nfdu8char_t* path = nullptr;
+    if (NFD_OpenDialogU8(&path, &filter, 1, ed.last_dir.empty() ? nullptr : ed.last_dir.c_str()) != NFD_OKAY) {
+        return false;
+    }
+    const std::string dest = path;
+    NFD_FreePathU8(path);
+    ProjectData data;
+    const std::string err = tsm::load_project(data, dest);
+    if (!err.empty()) {
+        ed.status = err;
+        return false;
+    }
+    ed.apply_project(data, dest);
+    g_ui.project_open = true;
+    return true;
+}
+
+void begin_new_project(Editor& ed) {
+    open_new_project_dialog(!g_ui.project_open);
+}
+
+void request_leave(Editor& ed, PendingAction action) {
+    if (action == PendingAction::None) {
+        return;
+    }
+    if (!g_ui.project_open || !ed.dirty) {
+        g_ui.pending = action;
+        return;
+    }
+    g_ui.pending = action;
+    g_ui.show_unsaved = true;
+}
+
+void perform_pending(Editor& ed, bool& running) {
+    const PendingAction action = g_ui.pending;
+    g_ui.pending = PendingAction::None;
+    g_ui.show_unsaved = false;
+    if (action == PendingAction::New) {
+        begin_new_project(ed);
+    } else if (action == PendingAction::Open) {
+        try_open_project(ed);
+    } else if (action == PendingAction::Quit) {
+        running = false;
+    }
+}
+
+void draw_split_layout(Editor& ed) {
+    const float avail_x = ImGui::GetContentRegionAvail().x;
+    const float avail_y = ImGui::GetContentRegionAvail().y;
+    const float splitter = 8.0f;
+    const float min_side = 280.0f * g_settings.scale;
+    const float min_canvas = 160.0f * g_settings.scale;
+    float side = ed.sidebar_w;
+    if (avail_x < min_side + min_canvas + splitter) {
+        side = std::max(160.0f * g_settings.scale, avail_x - min_canvas * 0.5f - splitter);
+    } else {
+        side = std::clamp(side, min_side, avail_x - min_canvas - splitter);
+    }
+    ed.sidebar_w = side;
+    const float canvas_w = std::max(1.0f, avail_x - side - splitter);
+
+    ImGui::BeginChild("canvas_panel", ImVec2(canvas_w, avail_y), ImGuiChildFlags_Borders);
+    handle_canvas(ed);
+    ImGui::EndChild();
+    ImGui::SameLine(0, 0);
+    ImGui::InvisibleButton("vsplit", ImVec2(splitter, avail_y));
+    if (ImGui::IsItemActive()) {
+        ed.sidebar_w -= ImGui::GetIO().MouseDelta.x;
+    }
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    }
+    ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                              g_settings.dark ? IM_COL32(70, 74, 82, 255) : IM_COL32(170, 176, 186, 255));
+    ImGui::SameLine(0, 0);
+    ImGui::BeginChild("side_panel", ImVec2(side, avail_y), ImGuiChildFlags_Borders);
+    if (ed.art_step()) {
+        const int pc = (ed.step == Step::Edges) ? 3 : TilesetDoc::kCols;
+        const int pr = (ed.step == Step::Edges) ? 3 : TilesetDoc::kRows;
+        draw_preview_grid(ed, ed.step == Step::Edges ? "3x3 preview" : "5x3 sheet", pc, pr, false);
+    } else if (ed.has_atlas) {
+        draw_preview_grid(ed, "12x4 atlas", ed.atlas.cols, AtlasDoc::kRows, true);
+    }
+    row_rule();
+    draw_palette(ed);
+    ImGui::EndChild();
+}
+
+bool is_cancel(const std::string& err) {
+    return err == "#cancel";
+}
+
+void apply_status(Editor& ed, const std::string& err, const char* ok) {
+    if (is_cancel(err)) {
+        return;
+    }
+    ed.status = err.empty() ? ok : err;
+}
+
+void draw_export_modal(Editor& ed) {
+    if (g_ui.show_export) {
+        ImGui::OpenPopup("Export tileset");
+    }
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x * 0.82f, vp->WorkSize.y * 0.82f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("Export tileset", &g_ui.show_export, ImGuiWindowFlags_NoSavedSettings)) {
+        return;
+    }
+    ImGui::Text("Atlas preview — %s", ed.project_name);
+    ImGui::SetNextItemWidth(220);
+    ImGui::SliderInt("Zoom", &g_ui.export_zoom, 1, 24);
+    ImGui::SameLine();
+    if (ImGui::Button("-")) {
+        g_ui.export_zoom = std::max(1, g_ui.export_zoom - 1);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("+")) {
+        g_ui.export_zoom = std::min(24, g_ui.export_zoom + 1);
+    }
+    const float footer = ImGui::GetFrameHeightWithSpacing() * 3.5f;
+    ImGui::BeginChild("export_view", ImVec2(0, -footer), ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_HorizontalScrollbar);
+    if (ImGui::IsWindowHovered() && ImGui::GetIO().MouseWheel != 0.0f) {
+        g_ui.export_zoom = std::clamp(g_ui.export_zoom + (ImGui::GetIO().MouseWheel > 0.0f ? 1 : -1), 1, 24);
+    }
+    const int ts = ed.atlas.tile_size;
+    const int cols = ed.atlas.cols;
+    const int rows = AtlasDoc::kRows;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 size(static_cast<float>(cols * ts * g_ui.export_zoom),
+                      static_cast<float>(rows * ts * g_ui.export_zoom));
+    ImGui::InvisibleButton("export_canvas", size);
+    draw_pixels(ImGui::GetWindowDrawList(), origin, g_ui.export_zoom, cols * ts, rows * ts, ed, 0, 0, cols, rows, true,
+                grid_color());
+    ImGui::EndChild();
+
+    if (ImGui::Checkbox("C header (.h)", &ed.export_header)) {
+        ed.touch();
+    }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Terrain (.terrain)", &ed.export_terrain)) {
+        ed.touch();
+    }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("5x3 PNG", &ed.export_5x3)) {
+        ed.touch();
+    }
+    ImGui::TextDisabled("The atlas PNG is always exported.");
+    if (ImGui::Button("Export…")) {
+        const std::string err = ed.export_all();
+        apply_status(ed, err, "Exported.");
+        if (err.empty()) {
+            g_ui.show_export = false;
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Close")) {
+        g_ui.show_export = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void draw_new_project_modal(Editor& ed) {
+    if (g_ui.show_new) {
+        ImGui::OpenPopup("New project");
+    }
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("New project", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        return;
+    }
+    ImGui::TextUnformatted("Name the tileset and choose a tile size.");
+    ImGui::SetNextItemWidth(280);
+    ImGui::InputText("Name", g_ui.new_name, sizeof(g_ui.new_name));
+    ImGui::TextUnformatted("Tile size");
+    ImGui::RadioButton("8x8", &g_ui.new_tile_size, 8);
+    ImGui::SameLine();
+    ImGui::RadioButton("16x16", &g_ui.new_tile_size, 16);
+    const std::string name = trim_copy(g_ui.new_name);
+    ImGui::BeginDisabled(name.empty());
+    if (ImGui::Button("Create", ImVec2(120, 0))) {
+        ed.reset_new(name, g_ui.new_tile_size);
+        g_ui.project_open = true;
+        g_ui.show_new = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        g_ui.show_new = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void draw_unsaved_modal(Editor& ed, bool& running) {
+    if (g_ui.show_unsaved) {
+        ImGui::OpenPopup("Unsaved changes");
+    }
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("Unsaved changes", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        return;
+    }
+    ImGui::Text("Save changes to \"%s\"?", ed.project_name);
+    if (ImGui::Button("Save", ImVec2(110, 0))) {
+        const std::string err = ed.save_project(ed.project_path.empty());
+        apply_status(ed, err, "Project saved.");
+        if (err.empty() && !ed.dirty) {
+            ImGui::CloseCurrentPopup();
+            perform_pending(ed, running);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Don't save", ImVec2(110, 0))) {
+        ed.dirty = false;
+        ImGui::CloseCurrentPopup();
+        perform_pending(ed, running);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(110, 0))) {
+        g_ui.pending = PendingAction::None;
+        g_ui.show_unsaved = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void draw_modals(Editor& ed, bool& running) {
+    if (!g_ui.project_open && !g_ui.show_new && !g_ui.show_unsaved) {
+        ImGui::OpenPopup("Welcome");
+        const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        if (ImGui::BeginPopupModal("Welcome", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+            ImGui::TextUnformatted("tileset maker thingy");
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Start a named project, or load a saved one.");
+            ImGui::Spacing();
+            if (ImGui::Button("New project", ImVec2(240, 0))) {
+                ImGui::CloseCurrentPopup();
+                open_new_project_dialog(true);
+            }
+            if (ImGui::Button("Load project", ImVec2(240, 0))) {
+                ImGui::CloseCurrentPopup();
+                try_open_project(ed);
+            }
+            ImGui::EndPopup();
+        }
+    }
+    draw_new_project_modal(ed);
+    draw_unsaved_modal(ed, running);
+    if (g_ui.project_open) {
+        draw_export_modal(ed);
+    }
+}
+
 } // namespace
 
 int run_editor() {
@@ -956,8 +1410,15 @@ int run_editor() {
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL3_ProcessEvent(&event);
             if (event.type == SDL_EVENT_QUIT) {
-                running = false;
+                request_leave(ed, PendingAction::Quit);
+                if (g_ui.pending == PendingAction::Quit && !g_ui.show_unsaved) {
+                    perform_pending(ed, running);
+                }
             }
+        }
+
+        if (g_ui.pending != PendingAction::None && !g_ui.show_unsaved) {
+            perform_pending(ed, running);
         }
 
         apply_appearance();
@@ -967,7 +1428,23 @@ int run_editor() {
 
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
-                if (ImGui::MenuItem("Import 5x3 PNG", "Ctrl+O")) {
+                if (ImGui::MenuItem("New project", "Ctrl+N")) {
+                    request_leave(ed, PendingAction::New);
+                }
+                if (ImGui::MenuItem("Open project...", "Ctrl+O")) {
+                    request_leave(ed, PendingAction::Open);
+                }
+                ImGui::BeginDisabled(!g_ui.project_open);
+                if (ImGui::MenuItem("Save project", "Ctrl+S")) {
+                    apply_status(ed, ed.save_project(false), "Project saved.");
+                }
+                if (ImGui::MenuItem("Save project as...", "Ctrl+Shift+S")) {
+                    apply_status(ed, ed.save_project(true), "Project saved.");
+                }
+                ImGui::EndDisabled();
+                ImGui::Separator();
+                ImGui::BeginDisabled(!g_ui.project_open);
+                if (ImGui::MenuItem("Import 5x3 PNG")) {
                     nfdu8filteritem_t filter = {"PNG", "png"};
                     nfdu8char_t* path = nullptr;
                     if (NFD_OpenDialogU8(&path, &filter, 1, nullptr) == NFD_OKAY) {
@@ -976,21 +1453,29 @@ int run_editor() {
                         if (err.empty()) {
                             ed.seeded = true;
                             ed.stamped = true;
+                            ed.has_atlas = false;
                             ed.step = Step::Specialty;
                             ed.configure_view();
+                            ed.bump_art();
                             ed.status = "Imported 5x3 sheet.";
                         } else {
                             ed.status = err;
                         }
                     }
                 }
-                if (ImGui::MenuItem("Export", "Ctrl+S")) {
-                    const std::string err = ed.export_all();
-                    ed.status = err.empty() ? "Exported." : err;
+                if (ImGui::MenuItem("Export...", "Ctrl+E")) {
+                    const std::string err = ed.ensure_atlas();
+                    if (err.empty()) {
+                        g_ui.export_zoom = std::max(2, 192 / std::max(1, ed.atlas.tile_size * ed.atlas.cols));
+                        g_ui.show_export = true;
+                    } else {
+                        ed.status = err;
+                    }
                 }
+                ImGui::EndDisabled();
                 ImGui::Separator();
                 if (ImGui::MenuItem("Quit")) {
-                    running = false;
+                    request_leave(ed, PendingAction::Quit);
                 }
                 ImGui::EndMenu();
             }
@@ -1022,239 +1507,236 @@ int run_editor() {
         }
 
         const bool cmd = io.KeyCtrl || io.KeySuper;
-        if (cmd && ImGui::IsKeyPressed(ImGuiKey_Z)) {
-            ed.do_undo();
-        }
-        if (cmd && ImGui::IsKeyPressed(ImGuiKey_S)) {
-            const std::string err = ed.export_all();
-            ed.status = err.empty() ? "Exported." : err;
-        }
-        if (cmd && ImGui::IsKeyPressed(ImGuiKey_C) && ed.tool == Tool::Select) {
-            copy_selection(ed);
-        }
-        if (cmd && ImGui::IsKeyPressed(ImGuiKey_V)) {
-            paste_clipboard(ed);
-        }
-        if (cmd && ImGui::IsKeyPressed(ImGuiKey_Comma)) {
-            g_ui.show_settings = true;
-        }
         if (!io.WantTextInput) {
-            if (ImGui::IsKeyPressed(ImGuiKey_1)) ed.tool = Tool::Pencil;
-            if (ImGui::IsKeyPressed(ImGuiKey_2)) ed.tool = Tool::Eraser;
-            if (ImGui::IsKeyPressed(ImGuiKey_3)) ed.tool = Tool::Fill;
-            if (ImGui::IsKeyPressed(ImGuiKey_4)) ed.tool = Tool::Line;
-            if (ImGui::IsKeyPressed(ImGuiKey_5)) ed.tool = Tool::Square;
-            if (ImGui::IsKeyPressed(ImGuiKey_6)) ed.tool = Tool::Circle;
-            if (ImGui::IsKeyPressed(ImGuiKey_7)) ed.tool = Tool::Eyedropper;
-            if (ImGui::IsKeyPressed(ImGuiKey_8)) ed.tool = Tool::Select;
-        }
-
-        const ImGuiViewport* vp = ImGui::GetMainViewport();
-        ImGui::SetNextWindowPos(vp->WorkPos);
-        ImGui::SetNextWindowSize(vp->WorkSize);
-        ImGui::Begin("Tileset Maker", nullptr,
-                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                         ImGuiWindowFlags_NoSavedSettings);
-
-        ImGui::BeginGroup();
-        ImGui::BeginDisabled(ed.step == Step::Center);
-        if (ImGui::Button("Back", ImVec2(88, 0))) {
-            ed.go_back();
-        }
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        const char* step_label = "Step 1 of 4  —  Center tile";
-        if (ed.step == Step::Edges) step_label = "Step 2 of 4  —  Edges (3x3)";
-        if (ed.step == Step::Specialty) step_label = "Step 3 of 4  —  Caps & extras";
-        if (ed.step == Step::Variants) step_label = "Step 4 of 4  —  Atlas & header";
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(step_label);
-        ImGui::SameLine();
-        ImGui::BeginDisabled(ed.step == Step::Variants);
-        if (ImGui::Button("Next", ImVec2(88, 0))) {
-            ed.go_next();
-        }
-        ImGui::EndDisabled();
-        ImGui::SameLine(0, 24);
-        ImGui::SetNextItemWidth(180);
-        ImGui::InputText("Project", ed.project_name, sizeof(ed.project_name));
-        ImGui::SameLine(0, 24);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Tile size");
-        ImGui::SameLine();
-        if (ImGui::RadioButton("8x8", ed.doc.tile_size == 8)) {
-            ed.doc.reset(8);
-            ed.has_atlas = false;
-            ed.seeded = false;
-            ed.stamped = false;
-            ed.step = Step::Center;
-            ed.configure_view();
-        }
-        ImGui::SameLine();
-        if (ImGui::RadioButton("16x16", ed.doc.tile_size == 16)) {
-            ed.doc.reset(16);
-            ed.has_atlas = false;
-            ed.seeded = false;
-            ed.stamped = false;
-            ed.step = Step::Center;
-            ed.configure_view();
-        }
-        ImGui::EndGroup();
-
-        row_rule();
-
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Export");
-        ImGui::SameLine(0, 16);
-        ImGui::Checkbox("Header", &ed.export_header);
-        ImGui::SameLine();
-        ImGui::Checkbox("Terrain", &ed.export_terrain);
-        ImGui::SameLine();
-        ImGui::Checkbox("5x3 sheet", &ed.export_5x3);
-        ImGui::SameLine(0, 16);
-        if (ImGui::Button("Export…")) {
-            const std::string err = ed.export_all();
-            ed.status = err.empty() ? "Exported." : err;
-        }
-
-        row_rule();
-
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Tools");
-        ImGui::SameLine(0, 16);
-        for (int i = 0; i < 8; ++i) {
-            const Tool t = static_cast<Tool>(i);
-            if (i) {
-                ImGui::SameLine();
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_N)) {
+                request_leave(ed, PendingAction::New);
             }
-            if (tool_button(t, ed.tool)) {
-                ed.tool = t;
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_O)) {
+                request_leave(ed, PendingAction::Open);
             }
-        }
-
-        row_rule();
-
-        if (ImGui::Button("Undo")) {
-            ed.do_undo();
-        }
-        ImGui::SameLine(0, 16);
-        ImGui::SetNextItemWidth(140);
-        ImGui::SliderInt("Zoom", &ed.zoom, 4, 32);
-        if (uses_brush(ed.tool)) {
-            ImGui::SameLine(0, 16);
-            ImGui::SetNextItemWidth(120);
-            ImGui::SliderInt("Brush", &ed.brush, 1, 4);
-        }
-        if (ed.step == Step::Center) {
-            ImGui::SameLine(0, 16);
-            ImGui::Checkbox("Tile mode", &ed.tile_mode);
-        }
-        if (ed.step == Step::Edges || ed.step == Step::Specialty) {
-            ImGui::SameLine(0, 16);
-            ImGui::Checkbox("H-flip", &ed.doc.hflip_linked);
-            ImGui::SameLine();
-            ImGui::Checkbox("V-flip", &ed.doc.vflip_linked);
-        }
-        if (ed.tool == Tool::Select) {
-            ImGui::SameLine(0, 16);
-            if (ImGui::Button("Copy")) {
-                copy_selection(ed);
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_S) && g_ui.project_open) {
+                apply_status(ed, ed.save_project(io.KeyShift), "Project saved.");
             }
-            ImGui::SameLine();
-            if (ImGui::Button("Paste")) {
-                paste_clipboard(ed);
-            }
-        }
-        if (ed.step == Step::Specialty) {
-            ImGui::SameLine(0, 16);
-            if (ImGui::Button("Stamp this")) {
-                ed.doc.push_undo();
-                ed.doc.stamp_specialty(ed.specialty);
-                ed.bump_art();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Stamp all extras")) {
-                ed.doc.push_undo();
-                ed.doc.stamp_all_specialty();
-                ed.bump_art();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Reset extras")) {
-                ed.doc.push_undo();
-                ed.doc.reset_specialty_to_center();
-                ed.bump_art();
-            }
-        }
-        if (ed.step == Step::Variants && ed.has_atlas) {
-            ImGui::SameLine(0, 16);
-            if (ImGui::Button("Add variant")) {
-                ed.atlas.push_undo();
-                const Cell slot = ed.atlas.add_variant(ed.atlas_cell, ed.variant_chance);
-                if (slot.x >= 0) {
-                    ed.atlas_cell = slot;
-                    ed.configure_view();
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_E) && g_ui.project_open) {
+                const std::string err = ed.ensure_atlas();
+                if (err.empty()) {
+                    g_ui.export_zoom = std::max(2, 192 / std::max(1, ed.atlas.tile_size * ed.atlas.cols));
+                    g_ui.show_export = true;
+                } else {
+                    ed.status = err;
                 }
             }
-            ImGui::SameLine();
-            ImGui::BeginDisabled(!ed.atlas.is_extra(ed.atlas_cell.x, ed.atlas_cell.y));
-            if (ImGui::Button("Remove variant")) {
-                ed.atlas.push_undo();
-                ed.atlas.remove_variant(ed.atlas_cell);
-                ed.atlas_cell = {9, 2};
-                ed.configure_view();
+        }
+        if (g_ui.project_open) {
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_Z)) {
+                ed.do_undo();
+            }
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_C) && ed.tool == Tool::Select) {
+                copy_selection(ed);
+            }
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_V)) {
+                paste_clipboard(ed);
+            }
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_Comma)) {
+                g_ui.show_settings = true;
+            }
+            if (!io.WantTextInput) {
+                if (ImGui::IsKeyPressed(ImGuiKey_1)) ed.tool = Tool::Pencil;
+                if (ImGui::IsKeyPressed(ImGuiKey_2)) ed.tool = Tool::Eraser;
+                if (ImGui::IsKeyPressed(ImGuiKey_3)) ed.tool = Tool::Fill;
+                if (ImGui::IsKeyPressed(ImGuiKey_4)) ed.tool = Tool::Line;
+                if (ImGui::IsKeyPressed(ImGuiKey_5)) ed.tool = Tool::Square;
+                if (ImGui::IsKeyPressed(ImGuiKey_6)) ed.tool = Tool::Circle;
+                if (ImGui::IsKeyPressed(ImGuiKey_7)) ed.tool = Tool::Eyedropper;
+                if (ImGui::IsKeyPressed(ImGuiKey_8)) ed.tool = Tool::Select;
+            }
+        }
+
+        if (g_ui.project_open) {
+            const ImGuiViewport* vp = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(vp->WorkPos);
+            ImGui::SetNextWindowSize(vp->WorkSize);
+            ImGui::Begin("Tileset Maker", nullptr,
+                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                             ImGuiWindowFlags_NoSavedSettings);
+
+            ImGui::BeginGroup();
+            ImGui::BeginDisabled(ed.step == Step::Center);
+            if (ImGui::Button("Back", ImVec2(88, 0))) {
+                ed.go_back();
             }
             ImGui::EndDisabled();
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(150);
-            const char* chances[] = {"Rare 0.08", "Uncommon 0.15", "0.30", "0.50", "Equal 1.0"};
-            const float chance_vals[] = {0.08f, 0.15f, 0.30f, 0.50f, 1.0f};
-            int ci = 2;
-            for (int i = 0; i < 5; ++i) {
-                if (std::fabs(ed.variant_chance - chance_vals[i]) < 0.001f) {
-                    ci = i;
-                }
+            const char* step_label = "Step 1 of 4  —  Center tile";
+            if (ed.step == Step::Edges) step_label = "Step 2 of 4  —  Edges (3x3)";
+            if (ed.step == Step::Specialty) step_label = "Step 3 of 4  —  Caps & extras";
+            if (ed.step == Step::Variants) step_label = "Step 4 of 4  —  Atlas & header";
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(step_label);
+            ImGui::SameLine();
+            ImGui::BeginDisabled(ed.step == Step::Variants);
+            if (ImGui::Button("Next", ImVec2(88, 0))) {
+                ed.go_next();
             }
-            if (ImGui::Combo("Chance", &ci, chances, 5)) {
-                ed.variant_chance = chance_vals[ci];
-                if (ed.atlas.is_extra(ed.atlas_cell.x, ed.atlas_cell.y)) {
-                    ed.atlas.set_binding_probability(ed.atlas_cell, ed.variant_chance);
-                }
+            ImGui::EndDisabled();
+            ImGui::SameLine(0, 24);
+            ImGui::SetNextItemWidth(180);
+            if (ImGui::InputText("Project", ed.project_name, sizeof(ed.project_name))) {
+                ed.touch();
             }
-        }
-
-        row_rule();
-
-        ImGui::TextWrapped("%s", ed.status.c_str());
-        if (ed.art_step()) {
-            ImGui::TextDisabled("%s", ed.doc.cell_name(ed.preview_sel.x, ed.preview_sel.y).c_str());
-        } else {
-            ImGui::TextDisabled("%s", ed.atlas.cell_name(ed.atlas_cell.x, ed.atlas_cell.y).c_str());
-        }
-
-        if (ImGui::BeginTable("layout", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV)) {
-            ImGui::TableSetupColumn("canvas", ImGuiTableColumnFlags_WidthStretch, 0.68f);
-            ImGui::TableSetupColumn("side", ImGuiTableColumnFlags_WidthStretch, 0.32f);
-            ImGui::TableNextColumn();
-            ImGui::BeginChild("canvas_panel", ImVec2(0, 0), ImGuiChildFlags_Borders);
-            handle_canvas(ed);
-            ImGui::EndChild();
-            ImGui::TableNextColumn();
-            ImGui::BeginChild("side_panel", ImVec2(0, 0), ImGuiChildFlags_Borders);
-            if (ed.art_step()) {
-                const int pc = (ed.step == Step::Edges) ? 3 : TilesetDoc::kCols;
-                const int pr = (ed.step == Step::Edges) ? 3 : TilesetDoc::kRows;
-                draw_preview_grid(ed, ed.step == Step::Edges ? "3x3 preview" : "5x3 sheet", pc, pr, false);
-            } else if (ed.has_atlas) {
-                draw_preview_grid(ed, "12x4 atlas", ed.atlas.cols, AtlasDoc::kRows, true);
+            ImGui::SameLine(0, 24);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Tile size");
+            ImGui::SameLine();
+            if (ImGui::RadioButton("8x8", ed.doc.tile_size == 8)) {
+                ed.doc.reset(8);
+                ed.atlas.reset(8);
+                ed.has_atlas = false;
+                ed.seeded = false;
+                ed.stamped = false;
+                ed.step = Step::Center;
+                ed.configure_view();
+                ed.bump_art();
             }
+            ImGui::SameLine();
+            if (ImGui::RadioButton("16x16", ed.doc.tile_size == 16)) {
+                ed.doc.reset(16);
+                ed.atlas.reset(16);
+                ed.has_atlas = false;
+                ed.seeded = false;
+                ed.stamped = false;
+                ed.step = Step::Center;
+                ed.configure_view();
+                ed.bump_art();
+            }
+            ImGui::EndGroup();
+
             row_rule();
-            draw_palette(ed);
-            ImGui::EndChild();
-            ImGui::EndTable();
-        }
-        ImGui::End();
 
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Tools");
+            ImGui::SameLine(0, 16);
+            for (int i = 0; i < 8; ++i) {
+                const Tool t = static_cast<Tool>(i);
+                if (i) {
+                    ImGui::SameLine();
+                }
+                if (tool_button(t, ed.tool)) {
+                    ed.tool = t;
+                }
+            }
+
+            row_rule();
+
+            if (ImGui::Button("Undo")) {
+                ed.do_undo();
+            }
+            if (uses_brush(ed.tool)) {
+                ImGui::SameLine(0, 16);
+                ImGui::SetNextItemWidth(120);
+                ImGui::SliderInt("Brush", &ed.brush, 1, 4);
+            }
+            if (ed.step == Step::Center) {
+                ImGui::SameLine(0, 16);
+                if (ImGui::Checkbox("Tile mode", &ed.tile_mode)) {
+                    ed.touch();
+                }
+            }
+            if (ed.step == Step::Edges || ed.step == Step::Specialty) {
+                ImGui::SameLine(0, 16);
+                if (ImGui::Checkbox("H-flip", &ed.doc.hflip_linked)) {
+                    ed.touch();
+                }
+                ImGui::SameLine();
+                if (ImGui::Checkbox("V-flip", &ed.doc.vflip_linked)) {
+                    ed.touch();
+                }
+            }
+            if (ed.tool == Tool::Select) {
+                ImGui::SameLine(0, 16);
+                if (ImGui::Button("Copy")) {
+                    copy_selection(ed);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Paste")) {
+                    paste_clipboard(ed);
+                }
+            }
+            if (ed.step == Step::Specialty) {
+                ImGui::SameLine(0, 16);
+                if (ImGui::Button("Stamp this")) {
+                    ed.doc.push_undo();
+                    ed.doc.stamp_specialty(ed.specialty);
+                    ed.bump_art();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Stamp all extras")) {
+                    ed.doc.push_undo();
+                    ed.doc.stamp_all_specialty();
+                    ed.bump_art();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset extras")) {
+                    ed.doc.push_undo();
+                    ed.doc.reset_specialty_to_center();
+                    ed.bump_art();
+                }
+            }
+            if (ed.step == Step::Variants && ed.has_atlas) {
+                ImGui::SameLine(0, 16);
+                if (ImGui::Button("Add variant")) {
+                    ed.atlas.push_undo();
+                    const Cell slot = ed.atlas.add_variant(ed.atlas_cell, ed.variant_chance);
+                    if (slot.x >= 0) {
+                        ed.atlas_cell = slot;
+                        ed.configure_view();
+                    }
+                    ed.bump_art();
+                }
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!ed.atlas.is_extra(ed.atlas_cell.x, ed.atlas_cell.y));
+                if (ImGui::Button("Remove variant")) {
+                    ed.atlas.push_undo();
+                    ed.atlas.remove_variant(ed.atlas_cell);
+                    ed.atlas_cell = {9, 2};
+                    ed.configure_view();
+                    ed.bump_art();
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(150);
+                const char* chances[] = {"Rare 0.08", "Uncommon 0.15", "0.30", "0.50", "Equal 1.0"};
+                const float chance_vals[] = {0.08f, 0.15f, 0.30f, 0.50f, 1.0f};
+                int ci = 2;
+                for (int i = 0; i < 5; ++i) {
+                    if (std::fabs(ed.variant_chance - chance_vals[i]) < 0.001f) {
+                        ci = i;
+                    }
+                }
+                if (ImGui::Combo("Chance", &ci, chances, 5)) {
+                    ed.variant_chance = chance_vals[ci];
+                    if (ed.atlas.is_extra(ed.atlas_cell.x, ed.atlas_cell.y)) {
+                        ed.atlas.set_binding_probability(ed.atlas_cell, ed.variant_chance);
+                    }
+                    ed.touch();
+                }
+            }
+
+            row_rule();
+
+            ImGui::TextWrapped("%s", ed.status.c_str());
+            if (ed.art_step()) {
+                ImGui::TextDisabled("%s", ed.doc.cell_name(ed.preview_sel.x, ed.preview_sel.y).c_str());
+            } else {
+                ImGui::TextDisabled("%s", ed.atlas.cell_name(ed.atlas_cell.x, ed.atlas_cell.y).c_str());
+            }
+
+            draw_split_layout(ed);
+            ImGui::End();
+        }
+
+        draw_modals(ed, running);
         draw_settings_window();
 
         ImGui::Render();

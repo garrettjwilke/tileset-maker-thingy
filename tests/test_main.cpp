@@ -3,6 +3,7 @@
 #include "core/io.h"
 #include "core/md_color.h"
 #include "core/palette_presets.h"
+#include "core/project.h"
 #include "core/tileset_doc.h"
 #include "app/settings.h"
 
@@ -299,6 +300,62 @@ void test_settings_file() {
     std::remove(path.c_str());
 }
 
+void test_project_file() {
+    using namespace tsm;
+    TilesetDoc src(8);
+    src.set_pixel(TilesetDoc::kCenter.x, TilesetDoc::kCenter.y, 0, 0, 7);
+    src.set_pixel(TilesetDoc::kCenter.x, TilesetDoc::kCenter.y, 3, 3, 4);
+    src.seed_from_center(true);
+    src.hflip_linked = false;
+    src.set_pixel(2, 1, 1, 1, 9);
+    src.stamp_all_specialty();
+    AtlasDoc atlas;
+    expect(convert_tileset_to_atlas(src, atlas).empty(), "project convert");
+    const Cell extra = atlas.add_variant({9, 2}, 0.3f);
+    expect(extra.x == 12, "project variant slot");
+
+    ProjectData data;
+    data.name = "roundtrip";
+    data.step = ProjectStep::Variants;
+    data.seeded = true;
+    data.stamped = true;
+    data.specialty = TilesetDoc::kPillarTop;
+    data.atlas_cell = extra;
+    data.preview_sel = {2, 1};
+    data.tile_mode = false;
+    data.export_header = false;
+    data.export_terrain = true;
+    data.export_5x3 = false;
+    data.art_rev = 11;
+    data.atlas_rev = 11;
+    data.has_atlas = true;
+    data.tileset = src.snapshot();
+    data.atlas = atlas.snapshot();
+
+    const std::string path = temp_path("tsm-roundtrip.tilesetproj");
+    expect(save_project(data, path).empty(), "save project");
+
+    ProjectData loaded;
+    expect(load_project(loaded, path).empty(), "load project");
+    expect(loaded.name == "roundtrip", "project name");
+    expect(loaded.tileset.tile_size == 8, "project tile size");
+    expect(loaded.step == ProjectStep::Variants, "project step");
+    expect(loaded.seeded && loaded.stamped, "project seeded/stamped");
+    expect(!loaded.tileset.hflip_linked, "project hflip flag");
+    expect(loaded.tileset.tiles[static_cast<size_t>(TilesetDoc::cell_index(TilesetDoc::kCenter.x, TilesetDoc::kCenter.y))][0] ==
+               7,
+           "project center pixel");
+    expect(loaded.tileset.tiles[static_cast<size_t>(TilesetDoc::cell_index(2, 1))][static_cast<size_t>(1 * 8 + 1)] == 9,
+           "project edge pixel");
+    expect(loaded.has_atlas && loaded.atlas.cols == 13, "project atlas cols");
+    expect(loaded.atlas.bindings.size() == 1 && loaded.atlas.bindings[0].root_x == 9, "project variant binding");
+    expect(loaded.atlas.palette[7] == src.color_at(7), "project atlas palette");
+    expect(!loaded.export_header && loaded.export_terrain && !loaded.export_5x3, "project export flags");
+    expect(loaded.tile_mode == false, "project tile mode");
+    expect(loaded.specialty.x == TilesetDoc::kPillarTop.x && loaded.atlas_cell.x == extra.x, "project selection");
+    std::remove(path.c_str());
+}
+
 } // namespace
 
 int main() {
@@ -307,6 +364,7 @@ int main() {
     test_pipeline_and_export();
     test_golden_vs_cli();
     test_settings_file();
+    test_project_file();
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";
         return 1;

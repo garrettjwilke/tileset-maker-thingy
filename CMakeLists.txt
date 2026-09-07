@@ -42,6 +42,7 @@ add_library(tileset_core STATIC
     src/core/io.cpp
     src/core/palette_presets.cpp
     src/core/draw.cpp
+    src/core/project.cpp
 )
 target_include_directories(tileset_core PUBLIC src)
 target_link_libraries(tileset_core PUBLIC gentileset)
