@@ -159,6 +159,11 @@ struct Editor {
     ImVec2 floating_drag_start_mouse{0.0f, 0.0f};
     Cell move_orig_a{-1, -1};
     Cell move_orig_b{-1, -1};
+    struct SelectionSnap {
+        Cell a{-1, -1};
+        Cell b{-1, -1};
+    };
+    std::vector<SelectionSnap> undo_selections;
 
     int edit_ox = 1, edit_oy = 1, edit_cols = 1, edit_rows = 1;
     int zoom = 16;
@@ -275,12 +280,23 @@ struct Editor {
         } else {
             atlas.push_undo();
         }
+        undo_selections.push_back({sel_a, sel_b});
+        if (undo_selections.size() > 30) {
+            undo_selections.erase(undo_selections.begin());
+        }
     }
     void do_undo() {
+        bool undone = false;
         if (art_step()) {
-            doc.undo();
+            undone = doc.undo();
         } else {
-            atlas.undo();
+            undone = atlas.undo();
+        }
+        if (undone && !undo_selections.empty()) {
+            const auto sel = undo_selections.back();
+            undo_selections.pop_back();
+            sel_a = sel.a;
+            sel_b = sel.b;
         }
         bump_art();
     }
@@ -333,7 +349,7 @@ struct Editor {
         if (step == Step::Center) {
             const bool force = !seeded || doc.center_changed_since_seed();
             if (force && seeded) {
-                doc.push_undo();
+                push_undo();
             }
             doc.seed_from_center(force);
             seeded = true;
@@ -483,6 +499,7 @@ struct Editor {
             last_dir = dirname_of(path);
         }
         dirty = false;
+        undo_selections.clear();
         status = "Loaded project.";
         configure_view();
     }
@@ -2100,6 +2117,7 @@ int run_editor() {
             ImGui::TextUnformatted("Tile size");
             ImGui::SameLine();
             if (ImGui::RadioButton("8x8", ed.doc.tile_size == 8)) {
+                ed.undo_selections.clear();
                 ed.doc.reset(8);
                 ed.atlas.reset(8);
                 ed.has_atlas = false;
@@ -2111,6 +2129,7 @@ int run_editor() {
             }
             ImGui::SameLine();
             if (ImGui::RadioButton("16x16", ed.doc.tile_size == 16)) {
+                ed.undo_selections.clear();
                 ed.doc.reset(16);
                 ed.atlas.reset(16);
                 ed.has_atlas = false;
@@ -2206,19 +2225,19 @@ int run_editor() {
             if (ed.step == Step::Specialty) {
                 ImGui::SameLine(0, 16);
                 if (ImGui::Button("Stamp this")) {
-                    ed.doc.push_undo();
+                    ed.push_undo();
                     ed.doc.stamp_specialty(ed.specialty);
                     ed.bump_art();
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Stamp all extras")) {
-                    ed.doc.push_undo();
+                    ed.push_undo();
                     ed.doc.stamp_all_specialty();
                     ed.bump_art();
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Reset extras")) {
-                    ed.doc.push_undo();
+                    ed.push_undo();
                     ed.doc.reset_specialty_to_center();
                     ed.bump_art();
                 }
@@ -2226,7 +2245,7 @@ int run_editor() {
             if (ed.step == Step::Variants && ed.has_atlas) {
                 ImGui::SameLine(0, 16);
                 if (ImGui::Button("Add variant")) {
-                    ed.atlas.push_undo();
+                    ed.push_undo();
                     const Cell slot = ed.atlas.add_variant(ed.atlas_cell, ed.variant_chance);
                     if (slot.x >= 0) {
                         ed.atlas_cell = slot;
@@ -2237,7 +2256,7 @@ int run_editor() {
                 ImGui::SameLine();
                 ImGui::BeginDisabled(!ed.atlas.is_extra(ed.atlas_cell.x, ed.atlas_cell.y));
                 if (ImGui::Button("Remove variant")) {
-                    ed.atlas.push_undo();
+                    ed.push_undo();
                     ed.atlas.remove_variant(ed.atlas_cell);
                     ed.atlas_cell = {9, 2};
                     ed.configure_view();
