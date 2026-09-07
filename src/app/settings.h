@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/types.h"
+
 #include <string>
 #include <utility>
 #include <vector>
@@ -11,6 +13,8 @@ namespace tsm {
     X(bool, dark, true, Theme, "theme")             \
     X(float, scale, 1.0f, Float, "scale")           \
     X(bool, pixel_grid, true, Bool, "pixel_grid")   \
+    X(Rgb, tile_grid_color, (Rgb{128, 128, 128}), Color, "tile_grid_color") \
+    X(Rgb, pixel_grid_color, (Rgb{104, 104, 104}), Color, "pixel_grid_color") \
     X(int, window_x, 0, Int, "window_x")            \
     X(int, window_y, 0, Int, "window_y")            \
     X(int, window_w, 1280, Int, "window_w")         \

@@ -58,6 +58,31 @@ void assign_Float(float& dst, const std::string& v) {
     dst = std::strtof(v.c_str(), nullptr);
 }
 
+void assign_Color(Rgb& dst, const std::string& v) {
+    std::string s = trim(v);
+    if (!s.empty() && s[0] != '#') {
+        s = "#" + s;
+    }
+    if (s.size() == 7) {
+        auto nyb = [](char ch) -> int {
+            if (ch >= '0' && ch <= '9') return ch - '0';
+            if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+            if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+            return -1;
+        };
+        const int r1 = nyb(s[1]), r2 = nyb(s[2]);
+        const int g1 = nyb(s[3]), g2 = nyb(s[4]);
+        const int b1 = nyb(s[5]), b2 = nyb(s[6]);
+        if (r1 >= 0 && r2 >= 0 && g1 >= 0 && g2 >= 0 && b1 >= 0 && b2 >= 0) {
+            dst = Rgb{
+                static_cast<uint8_t>(r1 * 16 + r2),
+                static_cast<uint8_t>(g1 * 16 + g2),
+                static_cast<uint8_t>(b1 * 16 + b2),
+            };
+        }
+    }
+}
+
 std::string format_Theme(bool v) {
     return v ? "dark" : "light";
 }
@@ -76,7 +101,16 @@ std::string format_Float(float v) {
     return buf;
 }
 
+std::string format_Color(Rgb v) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "#%02X%02X%02X", v.r, v.g, v.b);
+    return buf;
+}
+
 bool is_known_key(const std::string& key) {
+    if (key == "grid_color") {
+        return true;
+    }
 #define X(type, name, def, kind, k) \
     if (key == k) {                 \
         return true;                \
@@ -87,6 +121,10 @@ bool is_known_key(const std::string& key) {
 }
 
 void apply_key(Settings& s, const std::string& key, const std::string& value) {
+    if (key == "grid_color") {
+        assign_Color(s.tile_grid_color, value);
+        return;
+    }
 #define X(type, name, def, kind, k) \
     if (key == k) {                 \
         assign_##kind(s.name, value); \

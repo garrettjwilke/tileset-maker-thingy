@@ -482,16 +482,16 @@ tsm::Settings g_settings;
 SDL_Window* g_window = nullptr;
 std::string g_imgui_ini;
 
-ImU32 grid_color() {
-    return g_settings.dark ? IM_COL32(255, 255, 255, 48) : IM_COL32(20, 24, 32, 55);
-}
-
 ImU32 canvas_tile_grid_color() {
-    return g_settings.dark ? IM_COL32(245, 248, 255, 230) : IM_COL32(10, 12, 18, 220);
+    return im_color(g_settings.tile_grid_color);
 }
 
 ImU32 canvas_pixel_grid_color() {
-    return g_settings.dark ? IM_COL32(235, 240, 250, 110) : IM_COL32(24, 28, 36, 120);
+    return im_color(g_settings.pixel_grid_color);
+}
+
+ImU32 grid_color() {
+    return canvas_tile_grid_color();
 }
 
 void draw_pixels(ImDrawList* dl, ImVec2 origin, int zoom, int w, int h, const Editor& ed, int ox, int oy, int cols,
@@ -1109,19 +1109,48 @@ void draw_settings_controls() {
     }
     ImGui::TextDisabled("Drag to preview. Applies to the whole interface.");
     row_rule();
-    ImGui::TextUnformatted("Canvas");
+    ImGui::TextUnformatted("Grid");
     ImGui::Spacing();
     if (ImGui::Checkbox("Pixel grid", &g_settings.pixel_grid)) {
         persist_settings();
     }
     ImGui::TextDisabled("Shows a line between every pixel in the drawing area.");
+    ImGui::Spacing();
+    float tile_col[3] = {g_settings.tile_grid_color.r / 255.0f,
+                         g_settings.tile_grid_color.g / 255.0f,
+                         g_settings.tile_grid_color.b / 255.0f};
+    if (ImGui::ColorEdit3("Tile grid color", tile_col, ImGuiColorEditFlags_Uint8)) {
+        g_settings.tile_grid_color = tsm::Rgb{
+            static_cast<uint8_t>(tsm::clampi(static_cast<int>(tile_col[0] * 255.0f + 0.5f), 0, 255)),
+            static_cast<uint8_t>(tsm::clampi(static_cast<int>(tile_col[1] * 255.0f + 0.5f), 0, 255)),
+            static_cast<uint8_t>(tsm::clampi(static_cast<int>(tile_col[2] * 255.0f + 0.5f), 0, 255)),
+        };
+        persist_settings();
+    }
+    float pixel_col[3] = {g_settings.pixel_grid_color.r / 255.0f,
+                          g_settings.pixel_grid_color.g / 255.0f,
+                          g_settings.pixel_grid_color.b / 255.0f};
+    if (ImGui::ColorEdit3("Pixel grid color", pixel_col, ImGuiColorEditFlags_Uint8)) {
+        g_settings.pixel_grid_color = tsm::Rgb{
+            static_cast<uint8_t>(tsm::clampi(static_cast<int>(pixel_col[0] * 255.0f + 0.5f), 0, 255)),
+            static_cast<uint8_t>(tsm::clampi(static_cast<int>(pixel_col[1] * 255.0f + 0.5f), 0, 255)),
+            static_cast<uint8_t>(tsm::clampi(static_cast<int>(pixel_col[2] * 255.0f + 0.5f), 0, 255)),
+        };
+        persist_settings();
+    }
+    ImGui::Spacing();
+    if (ImGui::Button("Reset grid colors")) {
+        g_settings.tile_grid_color = tsm::Rgb{128, 128, 128};
+        g_settings.pixel_grid_color = tsm::Rgb{104, 104, 104};
+        persist_settings();
+    }
 }
 
 void draw_settings_window() {
     if (!g_ui.show_settings) {
         return;
     }
-    ImGui::SetNextWindowSize(ImVec2(420, 320), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420, 390), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Settings", &g_ui.show_settings)) {
         ImGui::End();
         return;
