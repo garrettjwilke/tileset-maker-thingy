@@ -149,6 +149,10 @@ struct Editor {
     ImVec2 paste_drag_start_mouse{0.0f, 0.0f};
     bool paste_dragging = false;
     bool paste_keyboard_nudge = false;
+    bool sel_moving = false;
+    ImVec2 sel_move_start_mouse{0.0f, 0.0f};
+    Cell sel_move_start_a{-1, -1};
+    Cell sel_move_start_b{-1, -1};
 
     int edit_ox = 1, edit_oy = 1, edit_cols = 1, edit_rows = 1;
     int zoom = 16;
@@ -162,12 +166,33 @@ struct Editor {
 
     bool art_step() const { return step != Step::Variants; }
 
+    bool has_selection() const {
+        return sel_a.x >= 0 && sel_b.x >= 0;
+    }
+
+    void clear_selection() {
+        sel_a = {-1, -1};
+        sel_b = {-1, -1};
+        selecting = false;
+        sel_moving = false;
+    }
+
+    bool in_selection(Cell src) const {
+        if (!has_selection()) {
+            return false;
+        }
+        const int x0 = std::min(sel_a.x, sel_b.x);
+        const int y0 = std::min(sel_a.y, sel_b.y);
+        const int x1 = std::max(sel_a.x, sel_b.x);
+        const int y1 = std::max(sel_a.y, sel_b.y);
+        return src.x >= x0 && src.x <= x1 && src.y >= y0 && src.y <= y1;
+    }
+
     void configure_view() {
         pasting = false;
         paste_dragging = false;
         paste_keyboard_nudge = false;
-        sel_a = {-1, -1};
-        sel_b = {-1, -1};
+        clear_selection();
         switch (step) {
         case Step::Center:
             edit_ox = TilesetDoc::kCenter.x;
@@ -270,7 +295,11 @@ struct Editor {
         bool wrote = false;
         for (int dy = 0; dy < brush; ++dy) {
             for (int dx = 0; dx < brush; ++dx) {
-                if (plot_src({origin.x + dx, origin.y + dy}, index)) {
+                const Cell p{origin.x + dx, origin.y + dy};
+                if (has_selection() && !in_selection(p)) {
+                    continue;
+                }
+                if (plot_src(p, index)) {
                     wrote = true;
                 }
             }
@@ -785,6 +814,27 @@ void handle_canvas(Editor& ed) {
             }
         }
     } else {
+        if (ed.tool == Tool::Select && ed.has_selection()) {
+            if (ed.in_selection(ed.hover)) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+            }
+            int dx = 0, dy = 0;
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))  dx -= 1;
+            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) dx += 1;
+            if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))    dy -= 1;
+            if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  dy += 1;
+            if (dx != 0 || dy != 0) {
+                const int x0 = std::min(ed.sel_a.x, ed.sel_b.x);
+                const int y0 = std::min(ed.sel_a.y, ed.sel_b.y);
+                const int w = std::abs(ed.sel_b.x - ed.sel_a.x) + 1;
+                const int h = std::abs(ed.sel_b.y - ed.sel_a.y) + 1;
+                const int new_x0 = std::clamp(x0 + dx, 0, std::max(0, sw - w));
+                const int new_y0 = std::clamp(y0 + dy, 0, std::max(0, sh - h));
+                ed.sel_a = {new_x0, new_y0};
+                ed.sel_b = {new_x0 + w - 1, new_y0 + h - 1};
+            }
+        }
+
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && ed.hover.x >= 0) {
             const Cell cell = ed.src_to_cell(ed.hover);
             const Cell loc = ed.src_local(ed.hover);
@@ -794,17 +844,28 @@ void handle_canvas(Editor& ed) {
         const bool stroke_tool = ed.tool == Tool::Line || ed.tool == Tool::Square || ed.tool == Tool::Circle;
         if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && ed.hover.x >= 0) {
             if (ed.tool == Tool::Select) {
-                const ImVec2 mp = ImGui::GetIO().MousePos;
-                const float lx = mp.x - origin.x;
-                const float ly = mp.y - origin.y;
-                const int rx = std::clamp(static_cast<int>(lx / (sw * ed.zoom)), 0, reps - 1);
-                const int ry = std::clamp(static_cast<int>(ly / (sh * ed.zoom)), 0, reps - 1);
-                ed.sel_tile = {rx, ry};
-                const int px = std::clamp(static_cast<int>(std::floor(lx / static_cast<float>(ed.zoom))) - rx * sw, 0, sw - 1);
-                const int py = std::clamp(static_cast<int>(std::floor(ly / static_cast<float>(ed.zoom))) - ry * sh, 0, sh - 1);
-                ed.sel_a = {px, py};
-                ed.sel_b = {px, py};
-                ed.selecting = true;
+                if (ed.has_selection() && ed.in_selection(ed.hover)) {
+                    ed.sel_moving = true;
+                    ed.sel_move_start_mouse = ImGui::GetIO().MousePos;
+                    const int x0 = std::min(ed.sel_a.x, ed.sel_b.x);
+                    const int y0 = std::min(ed.sel_a.y, ed.sel_b.y);
+                    const int x1 = std::max(ed.sel_a.x, ed.sel_b.x);
+                    const int y1 = std::max(ed.sel_a.y, ed.sel_b.y);
+                    ed.sel_move_start_a = {x0, y0};
+                    ed.sel_move_start_b = {x1, y1};
+                } else {
+                    const ImVec2 mp = ImGui::GetIO().MousePos;
+                    const float lx = mp.x - origin.x;
+                    const float ly = mp.y - origin.y;
+                    const int rx = std::clamp(static_cast<int>(lx / (sw * ed.zoom)), 0, reps - 1);
+                    const int ry = std::clamp(static_cast<int>(ly / (sh * ed.zoom)), 0, reps - 1);
+                    ed.sel_tile = {rx, ry};
+                    const int px = std::clamp(static_cast<int>(std::floor(lx / static_cast<float>(ed.zoom))) - rx * sw, 0, sw - 1);
+                    const int py = std::clamp(static_cast<int>(std::floor(ly / static_cast<float>(ed.zoom))) - ry * sh, 0, sh - 1);
+                    ed.sel_a = {px, py};
+                    ed.sel_b = {px, py};
+                    ed.selecting = true;
+                }
             } else if (stroke_tool) {
                 ed.stroke_from = ed.hover;
                 ed.stroke_to = ed.hover;
@@ -814,25 +875,75 @@ void handle_canvas(Editor& ed) {
                 const Cell loc = ed.src_local(ed.hover);
                 ed.paint_index = ed.get_px(cell.x, cell.y, loc.x, loc.y);
             } else if (ed.tool == Tool::Fill) {
-                const Cell cell = ed.src_to_cell(ed.hover);
-                const Cell loc = ed.src_local(ed.hover);
-                ed.push_undo();
-                if (ed.art_step()) {
-                    ed.doc.flood_fill(cell.x, cell.y, loc.x, loc.y, ed.paint_index);
+                if (ed.has_selection() && !ed.in_selection(ed.hover)) {
+                    // Clicked outside selection: do nothing
+                } else if (!ed.has_selection()) {
+                    const Cell cell = ed.src_to_cell(ed.hover);
+                    const Cell loc = ed.src_local(ed.hover);
+                    ed.push_undo();
+                    if (ed.art_step()) {
+                        ed.doc.flood_fill(cell.x, cell.y, loc.x, loc.y, ed.paint_index);
+                    } else {
+                        ed.atlas.flood_fill(cell.x, cell.y, loc.x, loc.y, ed.paint_index);
+                    }
+                    ed.bump_art();
                 } else {
-                    ed.atlas.flood_fill(cell.x, cell.y, loc.x, loc.y, ed.paint_index);
+                    const Cell start_cell = ed.src_to_cell(ed.hover);
+                    const Cell start_loc = ed.src_local(ed.hover);
+                    const int old = ed.get_px(start_cell.x, start_cell.y, start_loc.x, start_loc.y);
+                    if (old != ed.paint_index) {
+                        ed.push_undo();
+                        std::vector<Cell> stack{ed.hover};
+                        std::vector<uint8_t> seen(static_cast<size_t>(sw * sh), 0);
+                        while (!stack.empty()) {
+                            const Cell p = stack.back();
+                            stack.pop_back();
+                            if (p.x < 0 || p.y < 0 || p.x >= sw || p.y >= sh) continue;
+                            if (!ed.in_selection(p)) continue;
+                            const size_t key = static_cast<size_t>(p.y * sw + p.x);
+                            if (seen[key]) continue;
+                            seen[key] = 1;
+                            const Cell c = ed.src_to_cell(p);
+                            const Cell loc = ed.src_local(p);
+                            if (!ed.in_doc(c.x, c.y)) continue;
+                            if (ed.get_px(c.x, c.y, loc.x, loc.y) != old) continue;
+                            ed.set_px(c.x, c.y, loc.x, loc.y, ed.paint_index);
+                            stack.push_back({p.x + 1, p.y});
+                            stack.push_back({p.x - 1, p.y});
+                            stack.push_back({p.x, p.y + 1});
+                            stack.push_back({p.x, p.y - 1});
+                        }
+                        ed.bump_art();
+                    }
                 }
-                ed.bump_art();
             } else {
-                ed.push_undo();
+                if (!ed.has_selection() || ed.in_selection(ed.hover)) {
+                    ed.push_undo();
+                    ed.stamp_src(ed.hover, ed.tool == Tool::Eraser ? 0 : ed.paint_index);
+                    ed.bump_art();
+                }
                 ed.dragging = true;
-                ed.stamp_src(ed.hover, ed.tool == Tool::Eraser ? 0 : ed.paint_index);
-                ed.bump_art();
             }
         }
         if (ed.dragging && ImGui::IsMouseDown(ImGuiMouseButton_Left) && ed.hover.x >= 0) {
-            ed.stamp_src(ed.hover, ed.tool == Tool::Eraser ? 0 : ed.paint_index);
-            ed.bump_art();
+            if (ed.stamp_src(ed.hover, ed.tool == Tool::Eraser ? 0 : ed.paint_index)) {
+                ed.bump_art();
+            }
+        }
+        if (ed.sel_moving && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            const ImVec2 mpos = ImGui::GetIO().MousePos;
+            const float dmx = mpos.x - ed.sel_move_start_mouse.x;
+            const float dmy = mpos.y - ed.sel_move_start_mouse.y;
+            if (ed.zoom > 0) {
+                const int dpx = static_cast<int>(std::round(dmx / static_cast<float>(ed.zoom)));
+                const int dpy = static_cast<int>(std::round(dmy / static_cast<float>(ed.zoom)));
+                const int w = ed.sel_move_start_b.x - ed.sel_move_start_a.x + 1;
+                const int h = ed.sel_move_start_b.y - ed.sel_move_start_a.y + 1;
+                const int new_x0 = std::clamp(ed.sel_move_start_a.x + dpx, 0, std::max(0, sw - w));
+                const int new_y0 = std::clamp(ed.sel_move_start_a.y + dpy, 0, std::max(0, sh - h));
+                ed.sel_a = {new_x0, new_y0};
+                ed.sel_b = {new_x0 + w - 1, new_y0 + h - 1};
+            }
         }
         if (ed.selecting && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             const ImVec2 mp = ImGui::GetIO().MousePos;
@@ -847,6 +958,15 @@ void handle_canvas(Editor& ed) {
             ed.stroke_to = ed.hover;
         }
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            if (ed.sel_moving) {
+                ed.sel_moving = false;
+            }
+            if (ed.selecting) {
+                ed.selecting = false;
+                if (ed.sel_a.x == ed.sel_b.x && ed.sel_a.y == ed.sel_b.y) {
+                    ed.clear_selection();
+                }
+            }
             if (ed.stroke_pending && ed.stroke_from.x >= 0) {
                 std::vector<Cell> pts;
                 if (ed.tool == Tool::Square) {
@@ -863,13 +983,11 @@ void handle_canvas(Editor& ed) {
                 ed.bump_art();
             }
             ed.dragging = false;
-            ed.selecting = false;
             ed.stroke_pending = false;
             ed.stroke_from = {-1, -1};
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-            ed.sel_a = {-1, -1};
-            ed.sel_b = {-1, -1};
+            ed.clear_selection();
         }
     }
 
@@ -901,7 +1019,7 @@ void handle_canvas(Editor& ed) {
                 dl->AddRect(b0, b1, IM_COL32(255, 220, 60, 255), 0.0f, 0, 2.0f);
             }
         }
-    } else if (ed.sel_a.x >= 0 && ed.sel_b.x >= 0) {
+    } else if (ed.has_selection()) {
         const int x0 = std::min(ed.sel_a.x, ed.sel_b.x);
         const int y0 = std::min(ed.sel_a.y, ed.sel_b.y);
         const int x1 = std::max(ed.sel_a.x, ed.sel_b.x) + 1;
@@ -928,8 +1046,12 @@ void handle_canvas(Editor& ed) {
                 for (Cell p : pts) {
                     for (int dy = 0; dy < ed.brush; ++dy) {
                         for (int dx = 0; dx < ed.brush; ++dx) {
-                            const ImVec2 p0(to.x + static_cast<float>((p.x + dx) * ed.zoom),
-                                            to.y + static_cast<float>((p.y + dy) * ed.zoom));
+                            const Cell pt{p.x + dx, p.y + dy};
+                            if (ed.has_selection() && !ed.in_selection(pt)) {
+                                continue;
+                            }
+                            const ImVec2 p0(to.x + static_cast<float>(pt.x * ed.zoom),
+                                            to.y + static_cast<float>(pt.y * ed.zoom));
                             dl->AddRectFilled(p0, ImVec2(p0.x + static_cast<float>(ed.zoom), p0.y + static_cast<float>(ed.zoom)),
                                               im_color(c, 180));
                         }
@@ -1823,6 +1945,9 @@ int run_editor() {
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_V)) {
                 start_paste(ed);
             }
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_D)) {
+                ed.clear_selection();
+            }
             if (cmd && ImGui::IsKeyPressed(ImGuiKey_Comma)) {
                 g_ui.show_settings = true;
             }
@@ -1921,6 +2046,12 @@ int run_editor() {
             if (ImGui::Button("Undo")) {
                 ed.do_undo();
             }
+            if (ed.has_selection() && ed.tool != Tool::Select) {
+                ImGui::SameLine(0, 16);
+                if (ImGui::Button("Deselect (Ctrl+D)")) {
+                    ed.clear_selection();
+                }
+            }
             if (uses_brush(ed.tool)) {
                 ImGui::SameLine(0, 16);
                 ImGui::SetNextItemWidth(120);
@@ -1960,6 +2091,12 @@ int run_editor() {
                     ImGui::SameLine();
                     if (ImGui::Button("Paste")) {
                         start_paste(ed);
+                    }
+                    if (ed.has_selection()) {
+                        ImGui::SameLine();
+                        if (ImGui::Button("Deselect (Ctrl+D)")) {
+                            ed.clear_selection();
+                        }
                     }
                 }
             }
