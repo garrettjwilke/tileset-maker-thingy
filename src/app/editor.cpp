@@ -1436,12 +1436,15 @@ void draw_palette(Editor& ed) {
     if (ed.paint_index >= 0 && ed.paint_index < n) {
         Rgb c = ed.color(ed.paint_index);
         float col[3] = {c.r / 255.0f, c.g / 255.0f, c.b / 255.0f};
-        const float picker_w = std::min(ImGui::GetContentRegionAvail().x, 180.0f * g_settings.scale);
+        const float picker_w = std::min(ImGui::GetContentRegionAvail().x, 120.0f * g_settings.scale);
         ImGui::SetNextItemWidth(picker_w);
         if (ImGui::ColorPicker3("##picker", col,
                                 ImGuiColorEditFlags_PickerHueBar |
                                 ImGuiColorEditFlags_NoSidePreview |
-                                ImGuiColorEditFlags_NoAlpha)) {
+                                ImGuiColorEditFlags_NoAlpha |
+                                ImGuiColorEditFlags_NoInputs |
+                                ImGuiColorEditFlags_NoLabel |
+                                ImGuiColorEditFlags_NoOptions)) {
             Rgb next = MdColor::quantize(Rgb{static_cast<uint8_t>(col[0] * 255.0f + 0.5f),
                                              static_cast<uint8_t>(col[1] * 255.0f + 0.5f),
                                              static_cast<uint8_t>(col[2] * 255.0f + 0.5f)});
