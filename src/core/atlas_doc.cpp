@@ -53,6 +53,126 @@ std::string AtlasDoc::cell_name(int col, int row) const {
     return "Tile (" + std::to_string(col) + "," + std::to_string(row) + ")";
 }
 
+namespace {
+
+constexpr uint8_t kAtmE  = 0x01;
+constexpr uint8_t kAtmSE = 0x02;
+constexpr uint8_t kAtmS  = 0x04;
+constexpr uint8_t kAtmSW = 0x08;
+constexpr uint8_t kAtmW  = 0x10;
+constexpr uint8_t kAtmNW = 0x20;
+constexpr uint8_t kAtmN  = 0x40;
+constexpr uint8_t kAtmNE = 0x80;
+
+struct AtmTileDef {
+    uint8_t mask;
+    int8_t x;
+    int8_t y;
+};
+
+// 47 Godot MATCH_CORNERS_AND_SIDES autotile peering definitions
+static const AtmTileDef kAtmTiles[] = {
+    { 0x00,  0, 3 }, { 0x01,  1, 3 }, { 0x04,  0, 0 }, { 0x05,  1, 0 }, { 0x07,  8, 0 },
+    { 0x10,  3, 3 }, { 0x11,  2, 3 }, { 0x14,  3, 0 }, { 0x15,  2, 0 }, { 0x17,  5, 0 },
+    { 0x1C, 11, 0 }, { 0x1D,  6, 0 }, { 0x1F, 10, 0 }, { 0x40,  0, 2 }, { 0x41,  1, 2 },
+    { 0x44,  0, 1 }, { 0x45,  1, 1 }, { 0x47,  4, 1 }, { 0x50,  3, 2 }, { 0x51,  2, 2 },
+    { 0x54,  3, 1 }, { 0x55,  2, 1 }, { 0x57,  7, 3 }, { 0x5C,  7, 1 }, { 0x5D,  4, 3 },
+    { 0x5F,  9, 0 }, { 0x70, 11, 3 }, { 0x71,  6, 3 }, { 0x74,  7, 2 }, { 0x75,  4, 0 },
+    { 0x77, 10, 2 }, { 0x7C, 11, 2 }, { 0x7D, 11, 1 }, { 0x7F,  6, 1 }, { 0xC1,  8, 3 },
+    { 0xC5,  4, 2 }, { 0xC7,  8, 1 }, { 0xD1,  5, 3 }, { 0xD5,  7, 0 }, { 0xD7,  8, 2 },
+    { 0xDD,  9, 1 }, { 0xDF,  5, 1 }, { 0xF1,  9, 3 }, { 0xF5, 10, 3 }, { 0xF7,  5, 2 },
+    { 0xFD,  6, 2 }, { 0xFF,  9, 2 }
+};
+
+static uint8_t canonicalize_mask(uint8_t m) {
+    if (!(m & kAtmE) || !(m & kAtmS)) m &= static_cast<uint8_t>(~kAtmSE);
+    if (!(m & kAtmW) || !(m & kAtmS)) m &= static_cast<uint8_t>(~kAtmSW);
+    if (!(m & kAtmW) || !(m & kAtmN)) m &= static_cast<uint8_t>(~kAtmNW);
+    if (!(m & kAtmE) || !(m & kAtmN)) m &= static_cast<uint8_t>(~kAtmNE);
+    return m;
+}
+
+static Cell mask_to_cell(uint8_t mask) {
+    for (const auto& t : kAtmTiles) {
+        if (t.mask == mask) {
+            return {t.x, t.y};
+        }
+    }
+    return {-1, -1};
+}
+
+static int cell_to_mask(int col, int row) {
+    for (const auto& t : kAtmTiles) {
+        if (t.x == col && t.y == row) {
+            return t.mask;
+        }
+    }
+    return -1;
+}
+
+} // namespace
+
+Cell AtlasDoc::context_cell(Cell cell, int gx, int gy) const {
+    if (gx < 0 || gy < 0 || gx >= 3 || gy >= 3) {
+        return {-1, -1};
+    }
+    if (gx == 1 && gy == 1) {
+        return cell;
+    }
+
+    Cell root = cell;
+    if (is_extra(cell.x, cell.y)) {
+        root = binding_root(cell);
+    }
+    if (root.x < 0 || root.y < 0 || root.x >= kBaseCols || root.y >= kRows) {
+        root = {9, 2};
+    }
+
+    const int m = cell_to_mask(root.x, root.y);
+    if (m < 0) {
+        return {-1, -1};
+    }
+    const uint8_t mask = static_cast<uint8_t>(m);
+
+    uint8_t inner[3][3] = {{0}};
+    inner[1][1] = 1;
+    if (mask & kAtmE)  inner[1][2] = 1;
+    if (mask & kAtmSE) inner[2][2] = 1;
+    if (mask & kAtmS)  inner[2][1] = 1;
+    if (mask & kAtmSW) inner[2][0] = 1;
+    if (mask & kAtmW)  inner[1][0] = 1;
+    if (mask & kAtmNW) inner[0][0] = 1;
+    if (mask & kAtmN)  inner[0][1] = 1;
+    if (mask & kAtmNE) inner[0][2] = 1;
+
+    uint8_t grid[5][5];
+    for (int y = 0; y < 5; ++y) {
+        const int iy = std::clamp(y - 1, 0, 2);
+        for (int x = 0; x < 5; ++x) {
+            const int ix = std::clamp(x - 1, 0, 2);
+            grid[y][x] = inner[iy][ix];
+        }
+    }
+
+    if (grid[1 + gy][1 + gx] == 0) {
+        return {-1, -1};
+    }
+
+    const int cx = 1 + gx;
+    const int cy = 1 + gy;
+    uint8_t nb_mask = 0;
+    if (grid[cy][cx + 1])     nb_mask |= kAtmE;
+    if (grid[cy + 1][cx + 1]) nb_mask |= kAtmSE;
+    if (grid[cy + 1][cx])     nb_mask |= kAtmS;
+    if (grid[cy + 1][cx - 1]) nb_mask |= kAtmSW;
+    if (grid[cy][cx - 1])     nb_mask |= kAtmW;
+    if (grid[cy - 1][cx - 1]) nb_mask |= kAtmNW;
+    if (grid[cy - 1][cx])     nb_mask |= kAtmN;
+    if (grid[cy - 1][cx + 1]) nb_mask |= kAtmNE;
+
+    return mask_to_cell(canonicalize_mask(nb_mask));
+}
+
 std::vector<uint8_t> AtlasDoc::get_tile(int col, int row) const {
     if (!in_sheet(col, row)) {
         return {};

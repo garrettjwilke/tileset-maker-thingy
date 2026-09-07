@@ -619,6 +619,78 @@ void test_inner_corner_atlas_preview() {
     expect(!w_tile.empty() && w_tile.size() == 16 * 16, "atlas tile (2, 3) should be populated");
 }
 
+void test_atlas_context_cell() {
+    using namespace tsm;
+    AtlasDoc atlas(16);
+
+    // 1. Center Fill (9, 2) is surrounded by solid (9, 2) in all 8 directions
+    for (int gy = 0; gy < 3; ++gy) {
+        for (int gx = 0; gx < 3; ++gx) {
+            const Cell c = atlas.context_cell({9, 2}, gx, gy);
+            expect(c == Cell{9, 2}, "center fill (9, 2) should be surrounded by (9, 2)");
+        }
+    }
+
+    // 2. Horizontal Platform (2, 3): connects West & East, disconnected elsewhere
+    expect(atlas.context_cell({2, 3}, 1, 1) == Cell{2, 3}, "platform center should be (2, 3)");
+    expect(atlas.context_cell({2, 3}, 0, 1) == Cell{2, 3}, "platform West should be (2, 3)");
+    expect(atlas.context_cell({2, 3}, 2, 1) == Cell{2, 3}, "platform East should be (2, 3)");
+    expect(atlas.context_cell({2, 3}, 1, 0) == Cell{-1, -1}, "platform North should be empty");
+    expect(atlas.context_cell({2, 3}, 1, 2) == Cell{-1, -1}, "platform South should be empty");
+    expect(atlas.context_cell({2, 3}, 0, 0) == Cell{-1, -1}, "platform NW should be empty");
+    expect(atlas.context_cell({2, 3}, 2, 0) == Cell{-1, -1}, "platform NE should be empty");
+    expect(atlas.context_cell({2, 3}, 0, 2) == Cell{-1, -1}, "platform SW should be empty");
+    expect(atlas.context_cell({2, 3}, 2, 2) == Cell{-1, -1}, "platform SE should be empty");
+
+    // 3. Vertical Pillar (0, 1): connects North & South, disconnected elsewhere
+    expect(atlas.context_cell({0, 1}, 1, 1) == Cell{0, 1}, "pillar center should be (0, 1)");
+    expect(atlas.context_cell({0, 1}, 1, 0) == Cell{0, 1}, "pillar North should be (0, 1)");
+    expect(atlas.context_cell({0, 1}, 1, 2) == Cell{0, 1}, "pillar South should be (0, 1)");
+    expect(atlas.context_cell({0, 1}, 0, 1) == Cell{-1, -1}, "pillar West should be empty");
+    expect(atlas.context_cell({0, 1}, 2, 1) == Cell{-1, -1}, "pillar East should be empty");
+
+    // 4. Isolated tile (0, 3): no connections
+    expect(atlas.context_cell({0, 3}, 1, 1) == Cell{0, 3}, "isolated center should be (0, 3)");
+    for (int gy = 0; gy < 3; ++gy) {
+        for (int gx = 0; gx < 3; ++gx) {
+            if (gx == 1 && gy == 1) continue;
+            expect(atlas.context_cell({0, 3}, gx, gy) == Cell{-1, -1}, "isolated neighbors should be empty");
+        }
+    }
+
+    // 5. Solid Top-Left corner (8, 0): top and left are empty, right is top edge (10, 0), down is left edge (8, 1), SE is center fill (9, 2)
+    expect(atlas.context_cell({8, 0}, 1, 1) == Cell{8, 0}, "solid TL center should be (8, 0)");
+    expect(atlas.context_cell({8, 0}, 2, 1) == Cell{10, 0}, "solid TL East should be top edge (10, 0)");
+    expect(atlas.context_cell({8, 0}, 1, 2) == Cell{8, 1}, "solid TL South should be left edge (8, 1)");
+    expect(atlas.context_cell({8, 0}, 2, 2) == Cell{9, 2}, "solid TL SE should be center fill (9, 2)");
+    expect(atlas.context_cell({8, 0}, 1, 0) == Cell{-1, -1}, "solid TL North should be empty");
+    expect(atlas.context_cell({8, 0}, 0, 1) == Cell{-1, -1}, "solid TL West should be empty");
+
+    // 6. Out of bounds grid coordinates
+    expect(atlas.context_cell({9, 2}, -1, 1) == Cell{-1, -1}, "OOB gx should be (-1, -1)");
+    expect(atlas.context_cell({9, 2}, 3, 1) == Cell{-1, -1}, "OOB gx should be (-1, -1)");
+    expect(atlas.context_cell({9, 2}, 1, -1) == Cell{-1, -1}, "OOB gy should be (-1, -1)");
+    expect(atlas.context_cell({9, 2}, 1, 3) == Cell{-1, -1}, "OOB gy should be (-1, -1)");
+
+    // 7. Variants: center tile returns the variant itself, surrounding positions use root context
+    const Cell var_fill = atlas.add_variant({9, 2}, 0.5f);
+    expect(var_fill.x >= 12, "added variant should be extra column >= 12");
+    expect(atlas.context_cell(var_fill, 1, 1) == var_fill, "variant center should be the variant itself");
+    for (int gy = 0; gy < 3; ++gy) {
+        for (int gx = 0; gx < 3; ++gx) {
+            if (gx == 1 && gy == 1) continue;
+            expect(atlas.context_cell(var_fill, gx, gy) == Cell{9, 2},
+                   "variant of (9, 2) should have (9, 2) context tiles");
+        }
+    }
+
+    const Cell var_plat = atlas.add_variant({2, 3}, 0.3f);
+    expect(atlas.context_cell(var_plat, 1, 1) == var_plat, "platform variant center is variant");
+    expect(atlas.context_cell(var_plat, 0, 1) == Cell{2, 3}, "platform variant West is (2, 3)");
+    expect(atlas.context_cell(var_plat, 2, 1) == Cell{2, 3}, "platform variant East is (2, 3)");
+    expect(atlas.context_cell(var_plat, 1, 0) == Cell{-1, -1}, "platform variant North is empty");
+}
+
 } // namespace
 
 int main() {
@@ -632,6 +704,7 @@ int main() {
     test_corner_context_preview();
     test_specialty_context_cell();
     test_inner_corner_atlas_preview();
+    test_atlas_context_cell();
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";
         return 1;

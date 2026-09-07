@@ -42,6 +42,7 @@ public:
     int extra_count() const;
     int cell_index(int col, int row) const;
     std::string cell_name(int col, int row) const;
+    Cell context_cell(Cell cell, int gx, int gy) const;
 
     std::vector<uint8_t> get_tile(int col, int row) const;
     void set_tile(int col, int row, const std::vector<uint8_t>& data);

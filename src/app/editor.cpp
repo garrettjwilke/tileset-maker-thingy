@@ -285,8 +285,8 @@ struct Editor {
         case Step::Variants:
             edit_ox = atlas_cell.x;
             edit_oy = atlas_cell.y;
-            edit_cols = 1;
-            edit_rows = 1;
+            edit_cols = 3;
+            edit_rows = 3;
             break;
         }
     }
@@ -349,6 +349,12 @@ struct Editor {
         if (step == Step::Specialty) {
             return TilesetDoc::specialty_context_cell(specialty, gx, gy);
         }
+        if (step == Step::Variants) {
+            if (gx == 1 && gy == 1) {
+                return atlas_cell;
+            }
+            return {-1, -1};
+        }
         return {edit_ox + gx, edit_oy + gy};
     }
     Cell src_local(Cell src) const {
@@ -373,6 +379,20 @@ struct Editor {
                 return atlas.get_pixel(0, 1, loc.x, loc.y);
             } else if ((gx == 0 && gy == 1) || (gx == 2 && gy == 1)) {
                 return atlas.get_pixel(2, 3, loc.x, loc.y);
+            }
+            return -1;
+        }
+        if (step == Step::Variants) {
+            const int ts = tile_size();
+            if (ts <= 0) return -1;
+            const int gx = hover.x / ts;
+            const int gy = hover.y / ts;
+            if (gx == 1 && gy == 1) {
+                return atlas.get_pixel(atlas_cell.x, atlas_cell.y, loc.x, loc.y);
+            }
+            const Cell ctx = atlas.context_cell(atlas_cell, gx, gy);
+            if (ctx.x >= 0 && ctx.y >= 0) {
+                return atlas.get_pixel(ctx.x, ctx.y, loc.x, loc.y);
             }
             return -1;
         }
@@ -676,7 +696,20 @@ void draw_pixels(ImDrawList* dl, ImVec2 origin, float zoom, int w, int h, const 
             const ImVec2 p0(origin.x + static_cast<float>(x) * zoom, origin.y + static_cast<float>(y) * zoom);
             const ImVec2 p1(origin.x + static_cast<float>(x + 1) * zoom, origin.y + static_cast<float>(y + 1) * zoom);
 
-            if (canvas_mode && !atlas && ed.step == Step::Specialty) {
+            if (canvas_mode && atlas && ed.step == Step::Variants) {
+                const int gx = x / ts;
+                const int gy = y / ts;
+                const int lx = x % ts;
+                const int ly = y % ts;
+                const Cell ctx = (gx == 1 && gy == 1) ? ed.atlas_cell : ed.atlas.context_cell(ed.atlas_cell, gx, gy);
+                if (ctx.x < 0 || ctx.y < 0) {
+                    const bool checker = (((x / 4) + (y / 4)) % 2 == 0);
+                    dl->AddRectFilled(p0, p1, checker ? bg_a : bg_b);
+                } else {
+                    const int idx = ed.atlas.get_pixel(ctx.x, ctx.y, lx, ly);
+                    dl->AddRectFilled(p0, p1, im_color(ed.atlas.color_at(idx)));
+                }
+            } else if (canvas_mode && !atlas && ed.step == Step::Specialty) {
                 const int gx = x / ts;
                 const int gy = y / ts;
                 const int lx = x % ts;
@@ -750,14 +783,14 @@ void draw_pixels(ImDrawList* dl, ImVec2 origin, float zoom, int w, int h, const 
         dl->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + drawn_h), grid_col, grid_thickness);
     }
 
-    // In Step 3 canvas mode: highlight the center tile being edited
-    if (canvas_mode && !atlas && ed.step == Step::Specialty) {
+    // In Step 3 & Step 4 canvas mode: highlight the center tile being edited
+    if (canvas_mode && ((!atlas && ed.step == Step::Specialty) || (atlas && ed.step == Step::Variants))) {
         const ImVec2 c0(origin.x + static_cast<float>(ts * zoom), origin.y + static_cast<float>(ts * zoom));
         const ImVec2 c1(c0.x + static_cast<float>(ts * zoom), c0.y + static_cast<float>(ts * zoom));
         dl->AddRect(c0, c1, IM_COL32(255, 220, 60, 220), 0.0f, 0, 2.0f);
 
         // If editing inner corner, show subtle quadrant cutouts inside center tile
-        if (ed.specialty == TilesetDoc::kInnerCorner) {
+        if (!atlas && ed.step == Step::Specialty && ed.specialty == TilesetDoc::kInnerCorner) {
             const float half_px = static_cast<float>((ts / 2) * zoom);
             const float tile_px = static_cast<float>(ts * zoom);
             const ImU32 cut_col = IM_COL32(90, 190, 255, 140);
@@ -828,13 +861,26 @@ void copy_selection(Editor& ed) {
     for (int y = 0; y < ed.clipboard.h; ++y) {
         for (int x = 0; x < ed.clipboard.w; ++x) {
             const Cell src{x0 + x, y0 + y};
-            const Cell cell = ed.src_to_cell(src);
             const Cell loc = ed.src_local(src);
-            if (ed.in_doc(cell.x, cell.y)) {
-                ed.clipboard.pixels[static_cast<size_t>(y * ed.clipboard.w + x)] =
-                    static_cast<uint8_t>(ed.get_px(cell.x, cell.y, loc.x, loc.y));
+            if (ed.step == Step::Variants) {
+                const int ts = ed.tile_size();
+                const int gx = src.x / ts;
+                const int gy = src.y / ts;
+                const Cell ctx = (gx == 1 && gy == 1) ? ed.atlas_cell : ed.atlas.context_cell(ed.atlas_cell, gx, gy);
+                if (ctx.x >= 0 && ctx.y >= 0) {
+                    ed.clipboard.pixels[static_cast<size_t>(y * ed.clipboard.w + x)] =
+                        static_cast<uint8_t>(ed.atlas.get_pixel(ctx.x, ctx.y, loc.x, loc.y));
+                } else {
+                    ed.clipboard.pixels[static_cast<size_t>(y * ed.clipboard.w + x)] = 0;
+                }
             } else {
-                ed.clipboard.pixels[static_cast<size_t>(y * ed.clipboard.w + x)] = 0;
+                const Cell cell = ed.src_to_cell(src);
+                if (ed.in_doc(cell.x, cell.y)) {
+                    ed.clipboard.pixels[static_cast<size_t>(y * ed.clipboard.w + x)] =
+                        static_cast<uint8_t>(ed.get_px(cell.x, cell.y, loc.x, loc.y));
+                } else {
+                    ed.clipboard.pixels[static_cast<size_t>(y * ed.clipboard.w + x)] = 0;
+                }
             }
         }
     }
@@ -2723,7 +2769,7 @@ int run_editor() {
                     ImGui::TextDisabled("%s", ed.doc.cell_name(ed.preview_sel.x, ed.preview_sel.y).c_str());
                 }
             } else {
-                ImGui::TextDisabled("%s", ed.atlas.cell_name(ed.atlas_cell.x, ed.atlas_cell.y).c_str());
+                ImGui::TextDisabled("%s — center tile in 3x3 context", ed.atlas.cell_name(ed.atlas_cell.x, ed.atlas_cell.y).c_str());
             }
 
             draw_split_layout(ed);
