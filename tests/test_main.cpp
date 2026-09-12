@@ -691,6 +691,51 @@ void test_atlas_context_cell() {
     expect(atlas.context_cell(var_plat, 1, 0) == Cell{-1, -1}, "platform variant North is empty");
 }
 
+void test_variant_preservation_on_conversion() {
+    using namespace tsm;
+    TilesetDoc doc(8);
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 8; ++x) {
+            doc.set_pixel(TilesetDoc::kCenter.x, TilesetDoc::kCenter.y, x, y, 3);
+        }
+    }
+    doc.seed_from_center(true);
+    doc.stamp_all_specialty();
+
+    AtlasDoc atlas(8);
+    std::string err = convert_tileset_to_atlas(doc, atlas);
+    expect(err.empty(), "initial convert_tileset_to_atlas failed");
+    expect(atlas.cols == 12, "initial atlas cols should be 12");
+    expect(atlas.bindings.empty(), "initial atlas should have no bindings");
+
+    const Cell var_slot = atlas.add_variant({9, 2}, 0.42f);
+    expect(var_slot.x == 12 && var_slot.y == 0, "variant slot should be (12, 0)");
+    expect(atlas.cols == 13, "atlas should grow to 13 cols");
+    expect(atlas.bindings.size() == 1, "atlas should have 1 binding");
+
+    atlas.set_pixel(var_slot.x, var_slot.y, 3, 3, 7);
+    expect(atlas.get_pixel(var_slot.x, var_slot.y, 3, 3) == 7, "variant pixel not set");
+
+    doc.set_pixel(TilesetDoc::kCenter.x, TilesetDoc::kCenter.y, 0, 0, 4);
+    err = convert_tileset_to_atlas(doc, atlas);
+    expect(err.empty(), "second convert_tileset_to_atlas failed");
+
+    expect(atlas.cols == 13, "atlas should retain 13 cols after re-conversion");
+    expect(atlas.bindings.size() == 1, "atlas should retain variant binding");
+    if (!atlas.bindings.empty()) {
+        expect(atlas.bindings[0].x == 12 && atlas.bindings[0].y == 0, "preserved binding coords");
+        expect(atlas.bindings[0].root_x == 9 && atlas.bindings[0].root_y == 2, "preserved root coords");
+        expect(std::fabs(atlas.bindings[0].probability - 0.42f) < 0.001f, "preserved probability");
+    }
+    expect(atlas.get_pixel(12, 0, 3, 3) == 7, "painted variant pixel must be preserved across conversion");
+
+    const std::string header = render_header(atlas, "test.png");
+    expect(header.find("{ 12, 0, 9, 2, 42 }") != std::string::npos, "header contains preserved variant");
+
+    const std::string terrain = render_terrain(atlas, "test");
+    expect(terrain.find("\"root_x\": 9") != std::string::npos, "terrain contains preserved variant root");
+}
+
 } // namespace
 
 int main() {
@@ -705,6 +750,7 @@ int main() {
     test_specialty_context_cell();
     test_inner_corner_atlas_preview();
     test_atlas_context_cell();
+    test_variant_preservation_on_conversion();
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";
         return 1;

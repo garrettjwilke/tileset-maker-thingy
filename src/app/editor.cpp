@@ -209,7 +209,9 @@ struct Editor {
     void touch() { dirty = true; }
 
     void bump_art() {
-        ++art_rev;
+        if (art_step()) {
+            ++art_rev;
+        }
         dirty = true;
     }
 
@@ -472,14 +474,14 @@ struct Editor {
             step = Step::Specialty;
             status = "Caps and extras stamped from the 3x3. Tweak them, or stamp again after edge edits.";
         } else if (step == Step::Specialty) {
-            const std::string err = tsm::convert_tileset_to_atlas(doc, atlas);
+            const std::string err = ensure_atlas();
             if (!err.empty()) {
                 status = err;
                 return;
             }
-            has_atlas = true;
-            atlas_rev = art_rev;
-            atlas_cell = {9, 2};
+            if (!atlas.in_sheet(atlas_cell.x, atlas_cell.y)) {
+                atlas_cell = {9, 2};
+            }
             step = Step::Variants;
             status = "5x3 converted to a 12x4 atlas. Click a tile to edit it, or add a variant.";
         }
@@ -588,7 +590,7 @@ struct Editor {
         }
         has_atlas = data.has_atlas;
         art_rev = data.art_rev;
-        atlas_rev = data.atlas_rev;
+        atlas_rev = data.has_atlas ? art_rev : data.atlas_rev;
         step = step_from_project(data.step);
         seeded = data.seeded;
         stamped = data.stamped;
