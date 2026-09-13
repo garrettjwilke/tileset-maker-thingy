@@ -61,6 +61,7 @@ target_link_libraries(imgui PUBLIC SDL3::SDL3)
 add_executable(tileset-maker
     src/app/main.cpp
     src/app/editor.cpp
+    src/app/tileset_editor.cpp
     src/app/settings.cpp
 )
 target_link_libraries(tileset-maker PRIVATE tileset_core imgui nfd SDL3::SDL3)

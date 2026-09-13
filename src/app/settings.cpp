@@ -1,6 +1,6 @@
 #include "settings.h"
 
-#include "core/types.h"
+#include "../core/types.h"
 
 #include <cctype>
 #include <cstdio>
