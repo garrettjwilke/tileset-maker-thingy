@@ -74,6 +74,10 @@ public:
     void set_binding_probability(Cell cell, float probability);
     std::vector<VariantBinding> collect_bindings() const;
 
+    void grow_cols(int width_cols);
+    bool bind_variant(Cell extra, Cell root, float probability = 0.3f);
+    void auto_bind_extras(Cell default_root = {9, 2}, float probability = 0.3f);
+
     static bool tiles_equal(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b);
     std::vector<uint8_t> empty_tile() const;
 
@@ -96,7 +100,6 @@ private:
     std::vector<uint8_t> copy_tile_data(const std::vector<uint8_t>& data) const;
     void resize_tiles();
     void rebuild_tiles(int old_cols, const std::vector<uint8_t>& old_tiles);
-    void grow_cols(int width_cols);
     void compact_extras();
     std::vector<int> keep_indices_for_compact() const;
     void replace_indices_from(int min_index, int replacement);

@@ -90,6 +90,7 @@ public:
 
     bool center_changed_since_seed() const;
     void seed_from_center(bool force = false);
+    void sync_seed_to_center();
 
     void stamp_specialty(Cell cell);
     void stamp_all_specialty();

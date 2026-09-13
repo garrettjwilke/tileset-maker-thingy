@@ -512,18 +512,6 @@ TerrainLoad load_terrain(const std::string& path) {
         }
         return std::atoi(text.c_str() + pos + 1);
     };
-    auto find_float = [&](const char* key, float fallback, size_t from) {
-        const std::string needle = std::string("\"") + key + "\"";
-        auto pos = text.find(needle, from);
-        if (pos == std::string::npos) {
-            return fallback;
-        }
-        pos = text.find(':', pos);
-        if (pos == std::string::npos) {
-            return fallback;
-        }
-        return std::strtof(text.c_str() + pos + 1, nullptr);
-    };
     result.tile_size = find_int("tile_size", 0);
     const auto ts = text.find("\"tileset\"");
     if (ts != std::string::npos) {
@@ -546,37 +534,137 @@ TerrainLoad load_terrain(const std::string& path) {
         result.error = "Terrain file is missing tileset";
         return result;
     }
-    size_t pos = 0;
-    while (true) {
-        const auto xkey = text.find("\"x\"", pos);
-        if (xkey == std::string::npos) {
-            break;
-        }
-        VariantBinding b;
-        b.x = find_int("x", -1);
-        // scoped from this object: parse from xkey
-        auto read_near = [&](const char* key) {
-            const auto p = text.find(std::string("\"") + key + "\"", xkey);
-            if (p == std::string::npos || p > xkey + 200) {
-                return -1;
+
+    const auto vpos = text.find("\"variants\"");
+    if (vpos != std::string::npos) {
+        size_t pos = vpos;
+        while (true) {
+            const auto obj_start = text.find('{', pos);
+            if (obj_start == std::string::npos) break;
+            const auto obj_end = text.find('}', obj_start);
+            if (obj_end == std::string::npos) break;
+            const std::string block = text.substr(obj_start, obj_end - obj_start + 1);
+
+            auto parse_key_int = [&](const char* key) -> int {
+                const std::string needle = std::string("\"") + key + "\"";
+                const auto kp = block.find(needle);
+                if (kp == std::string::npos) return -1;
+                const auto cp = block.find(':', kp);
+                if (cp == std::string::npos) return -1;
+                return std::atoi(block.c_str() + cp + 1);
+            };
+            auto parse_key_float = [&](const char* key, float def) -> float {
+                const std::string needle = std::string("\"") + key + "\"";
+                const auto kp = block.find(needle);
+                if (kp == std::string::npos) return def;
+                const auto cp = block.find(':', kp);
+                if (cp == std::string::npos) return def;
+                return std::strtof(block.c_str() + cp + 1, nullptr);
+            };
+
+            VariantBinding b;
+            b.x = parse_key_int("x");
+            b.y = parse_key_int("y");
+            b.root_x = parse_key_int("root_x");
+            b.root_y = parse_key_int("root_y");
+            b.probability = parse_key_float("probability", 0.3f);
+            if (b.x >= 0 && b.y >= 0 && b.root_x >= 0 && b.root_y >= 0) {
+                result.variants.push_back(b);
             }
-            const auto c = text.find(':', p);
-            return (c == std::string::npos) ? -1 : std::atoi(text.c_str() + c + 1);
-        };
-        b.x = read_near("x");
-        b.y = read_near("y");
-        b.root_x = read_near("root_x");
-        b.root_y = read_near("root_y");
-        b.probability = find_float("probability", 0.3f, xkey);
-        if (b.x >= 0 && b.y >= 0 && b.root_x >= 0 && b.root_y >= 0) {
-            result.variants.push_back(b);
+            pos = obj_end + 1;
         }
-        pos = xkey + 3;
-        // skip to next object after this x to avoid re-reading y as x? y also has no "x"
-        const auto next_obj = text.find('{', xkey);
-        pos = (next_obj == std::string::npos) ? text.size() : next_obj + 1;
     }
     return result;
+}
+
+std::string import_12x4_tileset(AtlasDoc& atlas, const std::string& path, std::string& loaded_png_path, bool& had_terrain) {
+    had_terrain = false;
+    loaded_png_path.clear();
+
+    auto has_ext = [](const std::string& p, const std::string& ext) {
+        if (p.size() < ext.size()) return false;
+        return p.compare(p.size() - ext.size(), ext.size(), ext) == 0;
+    };
+
+    const std::string dir = dirname_of(path);
+    std::string stem = basename_of(path);
+    if (stem.size() >= 8 && stem.substr(stem.size() - 8) == ".terrain") {
+        stem = stem.substr(0, stem.size() - 8);
+    }
+
+    if (has_ext(path, ".terrain") || has_ext(path, ".json")) {
+        TerrainLoad tload = load_terrain(path);
+        if (!tload.error.empty()) {
+            return tload.error;
+        }
+
+        std::vector<std::string> png_candidates;
+        if (!tload.tileset.empty()) {
+            if (!dir.empty()) png_candidates.push_back(dir + "/" + tload.tileset);
+            png_candidates.push_back(tload.tileset);
+        }
+        if (!dir.empty()) png_candidates.push_back(dir + "/" + stem + ".png");
+        png_candidates.push_back(stem + ".png");
+
+        std::string resolved_png;
+        for (const auto& cand : png_candidates) {
+            std::ifstream f(cand.c_str(), std::ios::binary);
+            if (f.good()) {
+                resolved_png = cand;
+                break;
+            }
+        }
+
+        if (resolved_png.empty()) {
+            return "Could not find PNG image for terrain file: " + (tload.tileset.empty() ? (stem + ".png") : tload.tileset);
+        }
+
+        const std::string err = load_atlas_png(atlas, resolved_png);
+        if (!err.empty()) {
+            return err;
+        }
+
+        for (const auto& v : tload.variants) {
+            if (v.x >= atlas.cols) {
+                atlas.grow_cols(v.x + 1);
+            }
+        }
+        atlas.bindings = tload.variants;
+        had_terrain = true;
+        loaded_png_path = resolved_png;
+        return {};
+    }
+
+    const std::string err = load_atlas_png(atlas, path);
+    if (!err.empty()) {
+        return err;
+    }
+    loaded_png_path = path;
+
+    // Check if sibling .terrain exists
+    std::vector<std::string> terrain_candidates;
+    if (!dir.empty()) terrain_candidates.push_back(dir + "/" + stem + ".terrain");
+    terrain_candidates.push_back(stem + ".terrain");
+    if (!dir.empty()) terrain_candidates.push_back(dir + "/" + stem + ".terrain.json");
+
+    for (const auto& cand : terrain_candidates) {
+        std::ifstream f(cand.c_str(), std::ios::binary);
+        if (f.good()) {
+            TerrainLoad tload = load_terrain(cand);
+            if (tload.error.empty() && !tload.variants.empty()) {
+                for (const auto& v : tload.variants) {
+                    if (v.x >= atlas.cols) {
+                        atlas.grow_cols(v.x + 1);
+                    }
+                }
+                atlas.bindings = tload.variants;
+                had_terrain = true;
+                break;
+            }
+        }
+    }
+
+    return {};
 }
 
 std::string write_text_file(const std::string& path, const std::string& text) {

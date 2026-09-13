@@ -51,6 +51,7 @@ PaletteLoad load_palette_file(const std::string& path);
 std::string render_terrain(const AtlasDoc& atlas, const std::string& tileset_name);
 std::string save_terrain(const AtlasDoc& atlas, const std::string& dest_path, const std::string& tileset_path);
 TerrainLoad load_terrain(const std::string& path);
+std::string import_12x4_tileset(AtlasDoc& atlas, const std::string& path, std::string& loaded_png_path, bool& had_terrain);
 
 std::string write_text_file(const std::string& path, const std::string& text);
 std::string read_text_file(const std::string& path, std::string& out);

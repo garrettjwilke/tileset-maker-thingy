@@ -57,4 +57,56 @@ std::string convert_tileset_to_atlas(const TilesetDoc& src, AtlasDoc& out) {
     return {};
 }
 
+std::string convert_atlas_to_tileset(const AtlasDoc& src, TilesetDoc& out) {
+    if (src.cols < AtlasDoc::kBaseCols) {
+        return "Atlas must have at least 12 columns";
+    }
+    const int ts = src.tile_size;
+    if (ts != 8 && ts != 16) {
+        return "Tile size must be 8 or 16";
+    }
+
+    out.reset(ts);
+    out.apply_palette(src.palette);
+
+    struct CellMap {
+        int a_col;
+        int a_row;
+        int t_col;
+        int t_row;
+    };
+
+    static const CellMap kMap[] = {
+        // 3x3 autotile (outer corners, edges, center)
+        { 8,  0, 0, 0 }, // Top-left corner
+        { 10, 0, 1, 0 }, // Top edge
+        { 11, 0, 2, 0 }, // Top-right corner
+        { 8,  1, 0, 1 }, // Left edge
+        { 9,  2, 1, 1 }, // Center fill
+        { 11, 2, 2, 1 }, // Right edge
+        { 8,  3, 0, 2 }, // Bottom-left corner
+        { 9,  3, 1, 2 }, // Bottom edge
+        { 11, 3, 2, 2 }, // Bottom-right corner
+
+        // Specialty caps and extras
+        { 0,  0, 3, 0 }, // Pillar top
+        { 0,  2, 3, 1 }, // Pillar bottom
+        { 1,  3, 3, 2 }, // Platform left
+        { 2,  1, 4, 0 }, // Inner corner
+        { 0,  3, 4, 1 }, // Isolated tile
+        { 3,  3, 4, 2 }, // Platform right
+    };
+
+    for (const auto& m : kMap) {
+        out.set_tile(m.t_col, m.t_row, src.get_tile(m.a_col, m.a_row));
+    }
+
+    out.painted = true;
+    out.hflip_linked = out.mirrors_match();
+    out.vflip_linked = out.vmirrors_match();
+    out.sync_seed_to_center();
+
+    return {};
+}
+
 } // namespace tsm

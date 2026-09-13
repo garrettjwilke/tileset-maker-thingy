@@ -38,7 +38,7 @@ using tsm::TilesetDoc;
 
 enum class Step { Center, Edges, Specialty, Variants };
 enum class Tool { Pencil, Eraser, Fill, Line, Square, Circle, Eyedropper, Select };
-enum class PendingAction { None, New, Open, Quit };
+enum class PendingAction { None, New, Open, Quit, Import12x4, Import5x3 };
 
 const char* tool_name(Tool t) {
     switch (t) {
@@ -75,6 +75,13 @@ std::string trim_copy(const char* s) {
 std::string dirname_of(const std::string& path) {
     const auto slash = path.find_last_of("/\\");
     return (slash == std::string::npos) ? std::string() : path.substr(0, slash);
+}
+
+std::string basename_of(const std::string& path) {
+    const auto slash = path.find_last_of("/\\");
+    const std::string file = (slash == std::string::npos) ? path : path.substr(slash + 1);
+    const auto dot = file.find_last_of('.');
+    return (dot == std::string::npos) ? file : file.substr(0, dot);
 }
 
 ProjectStep project_step_from(Step step) {
@@ -495,7 +502,11 @@ struct Editor {
         } else if (step == Step::Specialty) {
             step = Step::Edges;
         } else if (step == Step::Variants) {
+            tsm::convert_atlas_to_tileset(atlas, doc);
+            seeded = true;
+            stamped = true;
             step = Step::Specialty;
+            status = "Extracted 5x3 tileset from 12x4 atlas.";
         }
         touch();
         configure_view();
@@ -2069,6 +2080,98 @@ bool try_open_project(Editor& ed) {
     return true;
 }
 
+bool try_import_12x4(Editor& ed) {
+    nfdu8filteritem_t filters[] = {
+        {"12x4 Tileset (*.png, *.terrain)", "png,terrain"},
+        {"PNG Image (*.png)", "png"},
+        {"Terrain File (*.terrain)", "terrain"}
+    };
+    nfdu8char_t* path = nullptr;
+    if (NFD_OpenDialogU8(&path, filters, 3, ed.last_dir.empty() ? nullptr : ed.last_dir.c_str()) != NFD_OKAY) {
+        return false;
+    }
+    const std::string file_path = path;
+    NFD_FreePathU8(path);
+
+    std::string loaded_png;
+    bool had_terrain = false;
+    const std::string err = tsm::import_12x4_tileset(ed.atlas, file_path, loaded_png, had_terrain);
+    if (!err.empty()) {
+        ed.status = err;
+        return false;
+    }
+
+    tsm::convert_atlas_to_tileset(ed.atlas, ed.doc);
+
+    ed.last_dir = dirname_of(file_path);
+    std::string stem = basename_of(file_path);
+    if (stem.size() >= 8 && stem.substr(stem.size() - 8) == ".terrain") {
+        stem = stem.substr(0, stem.size() - 8);
+    }
+    std::snprintf(ed.project_name, sizeof(ed.project_name), "%s", stem.c_str());
+    ed.project_path.clear();
+
+    ed.seeded = true;
+    ed.stamped = true;
+    ed.has_atlas = true;
+    ed.art_rev = 0;
+    ed.atlas_rev = 0;
+    ed.step = Step::Variants;
+    ed.atlas_cell = {9, 2};
+    ed.preview_sel = {1, 1};
+    ed.dirty = false;
+    ed.undo_selections.clear();
+    g_ui.project_open = true;
+    ed.configure_view();
+
+    if (had_terrain) {
+        ed.status = "Imported 12x4 tileset with terrain (" + std::to_string(ed.atlas.bindings.size()) + " variants).";
+    } else {
+        ed.status = "Imported 12x4 tileset.";
+    }
+    return true;
+}
+
+bool try_import_5x3(Editor& ed) {
+    nfdu8filteritem_t filter = {"PNG Image (*.png)", "png"};
+    nfdu8char_t* path = nullptr;
+    if (NFD_OpenDialogU8(&path, &filter, 1, ed.last_dir.empty() ? nullptr : ed.last_dir.c_str()) != NFD_OKAY) {
+        return false;
+    }
+    const std::string file_path = path;
+    NFD_FreePathU8(path);
+
+    const std::string err = tsm::load_tileset_png(ed.doc, file_path);
+    if (!err.empty()) {
+        ed.status = err;
+        return false;
+    }
+
+    ed.last_dir = dirname_of(file_path);
+    std::string stem = basename_of(file_path);
+    if (stem.size() >= 4 && stem.substr(stem.size() - 4) == "_5x3") {
+        stem = stem.substr(0, stem.size() - 4);
+    }
+    std::snprintf(ed.project_name, sizeof(ed.project_name), "%s", stem.c_str());
+    ed.project_path.clear();
+
+    ed.seeded = true;
+    ed.stamped = true;
+    ed.has_atlas = false;
+    ed.art_rev = 0;
+    ed.atlas_rev = -1;
+    ed.step = Step::Specialty;
+    ed.atlas_cell = {9, 2};
+    ed.preview_sel = {1, 1};
+    ed.dirty = false;
+    ed.undo_selections.clear();
+    g_ui.project_open = true;
+    ed.configure_view();
+    ed.bump_art();
+    ed.status = "Imported 5x3 tileset sheet.";
+    return true;
+}
+
 void begin_new_project(Editor& ed) {
     open_new_project_dialog(!g_ui.project_open);
 }
@@ -2093,6 +2196,10 @@ void perform_pending(Editor& ed, bool& running) {
         begin_new_project(ed);
     } else if (action == PendingAction::Open) {
         try_open_project(ed);
+    } else if (action == PendingAction::Import12x4) {
+        try_import_12x4(ed);
+    } else if (action == PendingAction::Import5x3) {
+        try_import_5x3(ed);
     } else if (action == PendingAction::Quit) {
         running = false;
     }
@@ -2319,6 +2426,14 @@ void draw_modals(Editor& ed, bool& running) {
                 ImGui::CloseCurrentPopup();
                 try_open_project(ed);
             }
+            if (ImGui::Button("Import 12x4 Tileset", ImVec2(240, 0))) {
+                ImGui::CloseCurrentPopup();
+                try_import_12x4(ed);
+            }
+            if (ImGui::Button("Import 5x3 Tileset", ImVec2(240, 0))) {
+                ImGui::CloseCurrentPopup();
+                try_import_5x3(ed);
+            }
             ImGui::EndPopup();
         }
     }
@@ -2407,26 +2522,13 @@ int run_editor() {
                 }
                 ImGui::EndDisabled();
                 ImGui::Separator();
-                ImGui::BeginDisabled(!g_ui.project_open);
-                if (ImGui::MenuItem("Import 5x3 PNG")) {
-                    nfdu8filteritem_t filter = {"PNG", "png"};
-                    nfdu8char_t* path = nullptr;
-                    if (NFD_OpenDialogU8(&path, &filter, 1, nullptr) == NFD_OKAY) {
-                        const std::string err = tsm::load_tileset_png(ed.doc, path);
-                        NFD_FreePathU8(path);
-                        if (err.empty()) {
-                            ed.seeded = true;
-                            ed.stamped = true;
-                            ed.has_atlas = false;
-                            ed.step = Step::Specialty;
-                            ed.configure_view();
-                            ed.bump_art();
-                            ed.status = "Imported 5x3 sheet.";
-                        } else {
-                            ed.status = err;
-                        }
-                    }
+                if (ImGui::MenuItem("Import 12x4 Tileset")) {
+                    request_leave(ed, PendingAction::Import12x4);
                 }
+                if (ImGui::MenuItem("Import 5x3 Tileset")) {
+                    request_leave(ed, PendingAction::Import5x3);
+                }
+                ImGui::BeginDisabled(!g_ui.project_open);
                 if (ImGui::MenuItem("Export...", "Ctrl+E")) {
                     const std::string err = ed.ensure_atlas();
                     if (err.empty()) {
@@ -2758,6 +2860,23 @@ int run_editor() {
                         ed.atlas.set_binding_probability(ed.atlas_cell, ed.variant_chance);
                     }
                     ed.touch();
+                }
+                if (ed.atlas.is_extra(ed.atlas_cell.x, ed.atlas_cell.y) &&
+                    !ed.atlas.is_bound_extra(ed.atlas_cell.x, ed.atlas_cell.y)) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Bind to center")) {
+                        ed.push_undo();
+                        ed.atlas.bind_variant(ed.atlas_cell, {9, 2}, ed.variant_chance);
+                        ed.touch();
+                    }
+                }
+                if (ed.atlas.cols > tsm::AtlasDoc::kBaseCols) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Auto-bind all")) {
+                        ed.push_undo();
+                        ed.atlas.auto_bind_extras({9, 2}, ed.variant_chance);
+                        ed.touch();
+                    }
                 }
             }
 

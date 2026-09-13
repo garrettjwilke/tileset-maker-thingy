@@ -736,6 +736,156 @@ void test_variant_preservation_on_conversion() {
     expect(terrain.find("\"root_x\": 9") != std::string::npos, "terrain contains preserved variant root");
 }
 
+void test_atlas_to_tileset_roundtrip() {
+    using namespace tsm;
+    TilesetDoc doc(8);
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 5; ++col) {
+            const int val = row * 5 + col + 1;
+            doc.set_pixel(col, row, 1, 1, val);
+            doc.set_pixel(col, row, 3, 3, val);
+        }
+    }
+
+    AtlasDoc atlas(8);
+    std::string err = convert_tileset_to_atlas(doc, atlas);
+    expect(err.empty(), "convert_tileset_to_atlas in roundtrip test");
+
+    TilesetDoc out(8);
+    err = convert_atlas_to_tileset(atlas, out);
+    expect(err.empty(), "convert_atlas_to_tileset in roundtrip test");
+    expect(out.painted, "out.painted must be true");
+    expect(!out.center_changed_since_seed(), "out.center_changed_since_seed() must be false");
+
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 5; ++col) {
+            expect(TilesetDoc::tiles_equal(doc.get_tile(col, row), out.get_tile(col, row)),
+                   ("Lossless tile roundtrip mismatch at col=" + std::to_string(col) + " row=" + std::to_string(row)).c_str());
+        }
+    }
+
+    // Now edit in atlas and convert to doc:
+    // (9, 2) is center fill (1, 1)
+    atlas.set_pixel(9, 2, 0, 0, 7);
+    // (8, 0) is top-left corner (0, 0)
+    atlas.set_pixel(8, 0, 0, 0, 6);
+    // (0, 0) is pillar top (3, 0)
+    atlas.set_pixel(0, 0, 0, 0, 5);
+    // (2, 1) is inner corner (4, 0)
+    atlas.set_pixel(2, 1, 0, 0, 4);
+
+    TilesetDoc out2(8);
+    err = convert_atlas_to_tileset(atlas, out2);
+    expect(err.empty(), "convert_atlas_to_tileset for edited atlas");
+    expect(out2.get_pixel(1, 1, 0, 0) == 7, "edited atlas center reflected in doc (1, 1)");
+    expect(out2.get_pixel(0, 0, 0, 0) == 6, "edited atlas top-left reflected in doc (0, 0)");
+    expect(out2.get_pixel(3, 0, 0, 0) == 5, "edited atlas pillar top reflected in doc (3, 0)");
+    expect(out2.get_pixel(4, 0, 0, 0) == 4, "edited atlas inner corner reflected in doc (4, 0)");
+}
+
+void test_import_12x4_tileset_scenarios() {
+    using namespace tsm;
+    TilesetDoc doc(8);
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 8; ++x) {
+            doc.set_pixel(1, 1, x, y, 2);
+        }
+    }
+    doc.seed_from_center(true);
+    doc.stamp_all_specialty();
+
+    AtlasDoc atlas(8);
+    convert_tileset_to_atlas(doc, atlas);
+    const Cell var_slot = atlas.add_variant({9, 2}, 0.5f);
+    expect(var_slot.x == 12 && var_slot.y == 0, "var_slot is (12, 0)");
+    atlas.set_pixel(12, 0, 2, 2, 8);
+
+    const std::string png_path = temp_path("tsm-test-import-12x4.png");
+    const std::string terrain_path = temp_path("tsm-test-import-12x4.terrain");
+    expect(save_atlas_png(atlas, png_path).empty(), "save atlas png for import test");
+    expect(save_terrain(atlas, terrain_path, png_path).empty(), "save terrain for import test");
+
+    // Scenario A: Import PNG with existing sibling terrain
+    {
+        AtlasDoc loaded(8);
+        std::string loaded_png;
+        bool had_terrain = false;
+        std::string err = import_12x4_tileset(loaded, png_path, loaded_png, had_terrain);
+        expect(err.empty(), "import PNG with sibling terrain succeeded");
+        expect(had_terrain, "sibling terrain detected and loaded");
+        expect(loaded.cols == 13, "loaded atlas cols == 13");
+        expect(loaded.bindings.size() == 1, "loaded variant binding count");
+        if (!loaded.bindings.empty()) {
+            expect(loaded.bindings[0].x == 12 && loaded.bindings[0].root_x == 9, "variant binding coords");
+        }
+        expect(loaded.get_pixel(12, 0, 2, 2) == 8, "variant pixel data loaded");
+
+        TilesetDoc doc_from_atlas(8);
+        expect(convert_atlas_to_tileset(loaded, doc_from_atlas).empty(), "convert loaded atlas to tileset");
+        expect(doc_from_atlas.painted, "doc from atlas painted");
+    }
+
+    // Scenario B: Import PNG without terrain
+    {
+        const std::string nopair_png = temp_path("tsm-test-nopair.png");
+        expect(save_atlas_png(atlas, nopair_png).empty(), "save nopair png");
+        AtlasDoc loaded(8);
+        std::string loaded_png;
+        bool had_terrain = false;
+        std::string err = import_12x4_tileset(loaded, nopair_png, loaded_png, had_terrain);
+        expect(err.empty(), "import PNG without terrain succeeded");
+        expect(!had_terrain, "had_terrain should be false when no terrain file exists");
+        expect(loaded.bindings.empty(), "bindings should be empty without terrain");
+        expect(loaded.cols == 13, "cols preserved from image");
+    }
+
+    // Scenario C: Import .terrain file directly
+    {
+        AtlasDoc loaded(8);
+        std::string loaded_png;
+        bool had_terrain = false;
+        std::string err = import_12x4_tileset(loaded, terrain_path, loaded_png, had_terrain);
+        expect(err.empty(), "import .terrain directly succeeded");
+        expect(had_terrain, "had_terrain should be true for .terrain import");
+        expect(loaded.bindings.size() == 1, "variant binding loaded from .terrain");
+        expect(loaded_png.find("tsm-test-import-12x4.png") != std::string::npos, "resolved correct png path");
+    }
+
+    // Scenario D: .terrain file with missing PNG shows error
+    {
+        const std::string orphan_terrain = temp_path("tsm-orphan.terrain");
+        const std::string orphan_text = "{\n\t\"version\": 1,\n\t\"tileset\": \"nonexistent_abc_123.png\",\n\t\"variants\": []\n}\n";
+        write_text_file(orphan_terrain, orphan_text);
+        AtlasDoc loaded(8);
+        std::string loaded_png;
+        bool had_terrain = false;
+        std::string err = import_12x4_tileset(loaded, orphan_terrain, loaded_png, had_terrain);
+        expect(!err.empty(), "orphan terrain should fail with error");
+        expect(err.find("Could not find PNG image") != std::string::npos, "error mentions missing PNG image");
+    }
+}
+
+void test_atlas_auto_bind_and_bind_variant() {
+    using namespace tsm;
+    AtlasDoc atlas(8);
+    atlas.grow_cols(13);
+    expect(atlas.cols == 13, "atlas grow_cols(13)");
+    atlas.set_pixel(12, 0, 1, 1, 3);
+    atlas.set_pixel(12, 2, 2, 2, 4);
+
+    expect(!atlas.is_bound_extra(12, 0), "12, 0 not yet bound");
+    expect(atlas.bind_variant({12, 0}, {8, 0}, 0.75f), "bind_variant succeeds");
+    expect(atlas.is_bound_extra(12, 0), "12, 0 is now bound");
+    expect(atlas.binding_root({12, 0}) == Cell{8, 0}, "binding root is (8, 0)");
+    expect(std::fabs(atlas.binding_probability({12, 0}) - 0.75f) < 0.001f, "binding prob is 0.75");
+
+    atlas.auto_bind_extras({9, 2}, 0.2f);
+    expect(atlas.is_bound_extra(12, 2), "12, 2 auto-bound");
+    expect(atlas.binding_root({12, 2}) == Cell{9, 2}, "12, 2 bound to default root (9, 2)");
+    // (12, 0) was already bound to (8, 0), auto_bind shouldn't overwrite it
+    expect(atlas.binding_root({12, 0}) == Cell{8, 0}, "existing binding (12, 0) preserved");
+}
+
 } // namespace
 
 int main() {
@@ -751,6 +901,9 @@ int main() {
     test_inner_corner_atlas_preview();
     test_atlas_context_cell();
     test_variant_preservation_on_conversion();
+    test_atlas_to_tileset_roundtrip();
+    test_import_12x4_tileset_scenarios();
+    test_atlas_auto_bind_and_bind_variant();
     if (g_fails) {
         std::cerr << g_fails << " test(s) failed\n";
         return 1;

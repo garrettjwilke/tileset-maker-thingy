@@ -538,6 +538,10 @@ void TilesetDoc::seed_from_center(bool force) {
     last_seed_ = center;
 }
 
+void TilesetDoc::sync_seed_to_center() {
+    last_seed_ = get_tile(kCenter.x, kCenter.y);
+}
+
 void TilesetDoc::stamp_specialty(Cell cell) {
     if (cell == kPillarTop) {
         stamp_halves_h(0, 0, 2, 0, kPillarTop);

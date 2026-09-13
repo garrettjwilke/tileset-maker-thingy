@@ -457,6 +457,45 @@ std::vector<VariantBinding> AtlasDoc::collect_bindings() const {
     return bindings;
 }
 
+bool AtlasDoc::bind_variant(Cell extra, Cell root, float probability) {
+    if (!is_extra(extra.x, extra.y) || extra.x < 0 || extra.y < 0 || extra.y >= kRows) {
+        return false;
+    }
+    if (!in_sheet(root.x, root.y) || is_extra(root.x, root.y)) {
+        return false;
+    }
+    if (extra.x >= cols) {
+        grow_cols(extra.x + 1);
+    }
+    const int idx = binding_index(extra);
+    if (idx >= 0) {
+        bindings[static_cast<size_t>(idx)].root_x = root.x;
+        bindings[static_cast<size_t>(idx)].root_y = root.y;
+        bindings[static_cast<size_t>(idx)].probability = clampf(probability, 0.01f, 1.0f);
+    } else {
+        bindings.push_back({extra.x, extra.y, root.x, root.y, clampf(probability, 0.01f, 1.0f)});
+    }
+    painted = true;
+    return true;
+}
+
+void AtlasDoc::auto_bind_extras(Cell default_root, float probability) {
+    if (!in_sheet(default_root.x, default_root.y) || is_extra(default_root.x, default_root.y)) {
+        default_root = {9, 2};
+    }
+    const auto empty = empty_tile();
+    for (int c = kBaseCols; c < cols; ++c) {
+        for (int r = 0; r < kRows; ++r) {
+            if (binding_index({c, r}) >= 0) {
+                continue;
+            }
+            if (!tiles_equal(get_tile(c, r), empty)) {
+                bind_variant({c, r}, default_root, probability);
+            }
+        }
+    }
+}
+
 bool AtlasDoc::tiles_equal(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
     return a == b;
 }
