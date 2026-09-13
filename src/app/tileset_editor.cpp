@@ -961,7 +961,8 @@ void draw_split_layout(TilesetEditor& ed, float avail_h) {
     ed.sidebar_w = side;
     const float canvas_w = std::max(1.0f, avail_x - side - splitter);
 
-    ImGui::BeginChild("canvas_panel", ImVec2(canvas_w, avail_y), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("canvas_panel", ImVec2(canvas_w, avail_y), ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     handle_canvas(ed);
     ImGui::EndChild();
     ImGui::SameLine(0, 0);
@@ -1892,19 +1893,15 @@ void TilesetEditor::draw_tools_and_options() {
 void TilesetEditor::draw_content(SDL_Renderer* renderer, SDL_Window* window, float avail_height) {
     (void)renderer;
     (void)window;
-    if (embedded) {
-        draw_step_header(true);
-        row_rule();
-        draw_tools_and_options();
-        row_rule();
-        draw_split_layout(*this, avail_height);
-    } else {
-        draw_step_header(false);
-        row_rule();
-        draw_tools_and_options();
-        row_rule();
-        draw_split_layout(*this, avail_height);
-    }
+    const float y_start = ImGui::GetCursorPosY();
+    draw_step_header(embedded);
+    row_rule();
+    draw_tools_and_options();
+    row_rule();
+    const float header_h = ImGui::GetCursorPosY() - y_start;
+    const float spacing_y = ImGui::GetStyle().ItemSpacing.y;
+    const float split_avail = (avail_height > 0.0f) ? std::max(60.0f, avail_height - header_h - spacing_y) : -1.0f;
+    draw_split_layout(*this, split_avail);
 }
 
 void TilesetEditor::draw_modals(bool& running) {
