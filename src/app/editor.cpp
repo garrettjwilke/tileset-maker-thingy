@@ -195,6 +195,7 @@ int run_editor() {
                 if (!ed.ui.project_open || !ed.dirty) {
                     running = false;
                 } else {
+                    ed.ui.pending = tsm::PendingAction::Quit;
                     ed.ui.show_unsaved = true;
                 }
             }
@@ -241,8 +242,13 @@ int run_editor() {
                 }
                 ImGui::EndDisabled();
                 ImGui::Separator();
-                if (ImGui::MenuItem("Quit")) {
-                    running = false;
+                if (ImGui::MenuItem("Quit", "Ctrl+Q")) {
+                    if (!ed.ui.project_open || !ed.dirty) {
+                        running = false;
+                    } else {
+                        ed.ui.pending = tsm::PendingAction::Quit;
+                        ed.ui.show_unsaved = true;
+                    }
                 }
                 ImGui::EndMenu();
             }
@@ -293,6 +299,14 @@ int run_editor() {
                     ed.ui.show_export = true;
                 } else {
                     ed.status = err;
+                }
+            }
+            if (cmd && ImGui::IsKeyPressed(ImGuiKey_Q)) {
+                if (!ed.ui.project_open || !ed.dirty) {
+                    running = false;
+                } else {
+                    ed.ui.pending = tsm::PendingAction::Quit;
+                    ed.ui.show_unsaved = true;
                 }
             }
         }

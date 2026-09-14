@@ -1991,12 +1991,24 @@ void TilesetEditor::draw_modals(bool& running) {
         ImGui::TextUnformatted("Save changes before continuing?");
         ImGui::Spacing();
         if (ImGui::Button("Save", ImVec2(110, 0))) {
-            save_project(false);
-            ui.show_unsaved = false;
-            ImGui::CloseCurrentPopup();
+            const std::string err = save_project(false);
+            if (err.empty()) {
+                if (ui.pending == PendingAction::Quit || ui.pending == PendingAction::None) {
+                    running = false;
+                }
+                ui.pending = PendingAction::None;
+                ui.show_unsaved = false;
+                ImGui::CloseCurrentPopup();
+            } else if (err != "#cancel") {
+                status = err;
+            }
         }
         ImGui::SameLine();
         if (ImGui::Button("Don't save", ImVec2(110, 0))) {
+            if (ui.pending == PendingAction::Quit || ui.pending == PendingAction::None) {
+                running = false;
+            }
+            ui.pending = PendingAction::None;
             ui.show_unsaved = false;
             ImGui::CloseCurrentPopup();
         }
@@ -2062,7 +2074,6 @@ void TilesetEditor::draw_modals(bool& running) {
         }
         ImGui::EndPopup();
     }
-    (void)running;
 }
 
 } // namespace tsm
