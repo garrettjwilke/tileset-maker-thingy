@@ -29,18 +29,17 @@ const char* tool_name(Tool t) {
     switch (t) {
     case Tool::Pencil: return "Pencil";
     case Tool::Eraser: return "Eraser";
-    case Tool::Fill: return "Fill";
     case Tool::Line: return "Line";
     case Tool::Square: return "Square";
-    case Tool::Circle: return "Circle";
-    case Tool::Eyedropper: return "Eyedropper";
+    case Tool::Fill: return "Fill";
     case Tool::Select: return "Select";
+    case Tool::Eyedropper: return "Eyedropper";
     }
     return "?";
 }
 
 bool uses_brush(Tool t) {
-    return t == Tool::Pencil || t == Tool::Eraser || t == Tool::Line || t == Tool::Square || t == Tool::Circle;
+    return t == Tool::Pencil || t == Tool::Eraser || t == Tool::Line || t == Tool::Square;
 }
 
 ImU32 im_color(Rgb c, int a = 255) {
@@ -299,6 +298,9 @@ bool tool_button(Tool t, Tool current, bool dark) {
     char label[32];
     std::snprintf(label, sizeof(label), "%s  %d", tool_name(t), static_cast<int>(t) + 1);
     const bool hit = ImGui::Button(label);
+    if (t == Tool::Square && ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Square / Circle tool");
+    }
     ImGui::PopStyleColor(5);
     ImGui::PopStyleVar();
     return hit;
@@ -764,7 +766,7 @@ void handle_canvas(TilesetEditor& ed) {
             if (px >= 0) ed.select_single_palette(px);
         }
 
-        const bool stroke_tool = ed.tool == Tool::Line || ed.tool == Tool::Square || ed.tool == Tool::Circle;
+        const bool stroke_tool = ed.tool == Tool::Line || ed.tool == Tool::Square;
         if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && ed.hover.x >= 0) {
             if (ed.tool == Tool::Select) {
                 if (ed.has_selection() && ed.in_selection(ed.hover)) {
@@ -894,9 +896,8 @@ void handle_canvas(TilesetEditor& ed) {
             if (ed.stroke_pending && ed.stroke_from.x >= 0) {
                 std::vector<Cell> pts;
                 if (ed.tool == Tool::Square) {
-                    pts = tsm::rect_outline(ed.stroke_from, ed.stroke_to);
-                } else if (ed.tool == Tool::Circle) {
-                    pts = tsm::ellipse_outline(ed.stroke_from, ed.stroke_to);
+                    pts = ed.circle_mode ? tsm::ellipse_outline(ed.stroke_from, ed.stroke_to)
+                                         : tsm::rect_outline(ed.stroke_from, ed.stroke_to);
                 } else {
                     pts = tsm::bresenham(ed.stroke_from, ed.stroke_to);
                 }
@@ -970,9 +971,10 @@ void handle_canvas(TilesetEditor& ed) {
     }
     if (ed.stroke_pending && ed.stroke_from.x >= 0) {
         const Rgb c = ed.color(ed.paint_index);
-        std::vector<Cell> pts = (ed.tool == Tool::Square)   ? tsm::rect_outline(ed.stroke_from, ed.stroke_to)
-                                : (ed.tool == Tool::Circle) ? tsm::ellipse_outline(ed.stroke_from, ed.stroke_to)
-                                                            : tsm::bresenham(ed.stroke_from, ed.stroke_to);
+        std::vector<Cell> pts = (ed.tool == Tool::Square)
+                                    ? (ed.circle_mode ? tsm::ellipse_outline(ed.stroke_from, ed.stroke_to)
+                                                      : tsm::rect_outline(ed.stroke_from, ed.stroke_to))
+                                    : tsm::bresenham(ed.stroke_from, ed.stroke_to);
         for (int ry = 0; ry < reps; ++ry) {
             for (int rx = 0; rx < reps; ++rx) {
                 const ImVec2 to(origin.x + static_cast<float>(rx * sw * ed.zoom),
@@ -1751,12 +1753,11 @@ void TilesetEditor::handle_shortcuts(const ImGuiIO& io) {
         Tool new_tool = tool;
         if (ImGui::IsKeyPressed(ImGuiKey_1)) new_tool = Tool::Pencil;
         if (ImGui::IsKeyPressed(ImGuiKey_2)) new_tool = Tool::Eraser;
-        if (ImGui::IsKeyPressed(ImGuiKey_3)) new_tool = Tool::Fill;
-        if (ImGui::IsKeyPressed(ImGuiKey_4)) new_tool = Tool::Line;
-        if (ImGui::IsKeyPressed(ImGuiKey_5)) new_tool = Tool::Square;
-        if (ImGui::IsKeyPressed(ImGuiKey_6)) new_tool = Tool::Circle;
+        if (ImGui::IsKeyPressed(ImGuiKey_3)) new_tool = Tool::Line;
+        if (ImGui::IsKeyPressed(ImGuiKey_4)) new_tool = Tool::Square;
+        if (ImGui::IsKeyPressed(ImGuiKey_5)) new_tool = Tool::Fill;
+        if (ImGui::IsKeyPressed(ImGuiKey_6)) new_tool = Tool::Select;
         if (ImGui::IsKeyPressed(ImGuiKey_7)) new_tool = Tool::Eyedropper;
-        if (ImGui::IsKeyPressed(ImGuiKey_8)) new_tool = Tool::Select;
         if (new_tool != tool) {
             if (floating && new_tool != Tool::Select) commit_floating();
             tool = new_tool;
@@ -1841,7 +1842,7 @@ void TilesetEditor::draw_tools_and_options() {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Tools");
     ImGui::SameLine(0, 16);
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 7; ++i) {
         const Tool t = static_cast<Tool>(i);
         if (i) ImGui::SameLine();
         if (tool_button(t, tool, settings.dark)) {
@@ -1877,6 +1878,10 @@ void TilesetEditor::draw_tools_and_options() {
             }
             ImGui::SameLine();
         }
+    }
+    if (tool == Tool::Square) {
+        ImGui::SameLine(0, 16);
+        ImGui::Checkbox("Circle Mode##RectCircle", &circle_mode);
     }
     if (step == Step::Center) {
         ImGui::SameLine(0, 16);

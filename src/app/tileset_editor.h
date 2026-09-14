@@ -15,7 +15,7 @@ struct ImGuiIO;
 namespace tsm {
 
 enum class Step { Center, Edges, Specialty, Variants };
-enum class Tool { Pencil, Eraser, Fill, Line, Square, Circle, Eyedropper, Select };
+enum class Tool { Pencil, Eraser, Line, Square, Fill, Select, Eyedropper };
 enum class PendingAction { None, New, Open, Quit, Import12x4, Import5x3 };
 
 struct Clipboard {
@@ -70,6 +70,7 @@ public:
     bool picker_init = false;
 
     int brush = 1;
+    bool circle_mode = false;
     bool tile_mode = true;
     bool export_header = true;
     bool export_terrain = true;
