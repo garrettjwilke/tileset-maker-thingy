@@ -267,6 +267,9 @@ void test_golden_vs_cli() {
 void test_settings_file() {
     using namespace tsm;
     Settings s;
+    expect(s.pixel_grid, "default pixel_grid");
+    expect(s.tile_grid, "default tile_grid");
+    expect(s.tile_grid_color == (Rgb{128, 128, 128}), "default tile_grid_color");
     expect(s.pixel_grid_color == (Rgb{104, 104, 104}), "default pixel_grid_color");
     s.dark = false;
     s.scale = 1.25f;
@@ -277,6 +280,7 @@ void test_settings_file() {
     s.window_maximized = true;
     s.window_placed = true;
     s.pixel_grid = false;
+    s.tile_grid = false;
     s.tile_grid_color = Rgb{0x12, 0x34, 0x56};
     s.pixel_grid_color = Rgb{0xAB, 0xCD, 0xEF};
     s.extra.emplace_back("future_flag", "ok");
@@ -287,6 +291,7 @@ void test_settings_file() {
     expect(text.find("window_x=40") != std::string::npos, "settings should write window_x");
     expect(text.find("window_maximized=true") != std::string::npos, "settings should write maximized");
     expect(text.find("pixel_grid=false") != std::string::npos, "settings should write pixel_grid");
+    expect(text.find("tile_grid=false") != std::string::npos, "settings should write tile_grid");
     expect(text.find("tile_grid_color=#123456") != std::string::npos, "settings should write tile_grid_color");
     expect(text.find("pixel_grid_color=#ABCDEF") != std::string::npos, "settings should write pixel_grid_color");
     expect(text.find("future_flag=ok") != std::string::npos, "settings should keep unknown keys");
@@ -303,6 +308,7 @@ void test_settings_file() {
     expect(loaded.window_w == 1600 && loaded.window_h == 900, "roundtrip window size");
     expect(loaded.window_maximized && loaded.window_placed, "roundtrip window flags");
     expect(!loaded.pixel_grid, "roundtrip pixel_grid");
+    expect(!loaded.tile_grid, "roundtrip tile_grid");
     expect(loaded.tile_grid_color == (Rgb{0x12, 0x34, 0x56}), "roundtrip tile_grid_color");
     expect(loaded.pixel_grid_color == (Rgb{0xAB, 0xCD, 0xEF}), "roundtrip pixel_grid_color");
     expect(loaded.extra.size() == 1 && loaded.extra[0].first == "future_flag" && loaded.extra[0].second == "ok",
@@ -335,7 +341,7 @@ void test_settings_file() {
     expect(save_settings_file(s, path), "save settings file");
     Settings from_disk;
     expect(load_settings_file(from_disk, path), "load settings file");
-    expect(!from_disk.dark && from_disk.window_placed && !from_disk.pixel_grid &&
+    expect(!from_disk.dark && from_disk.window_placed && !from_disk.pixel_grid && !from_disk.tile_grid &&
            from_disk.tile_grid_color == (Rgb{0x12, 0x34, 0x56}) &&
            from_disk.pixel_grid_color == (Rgb{0xAB, 0xCD, 0xEF}) &&
            from_disk.extra.size() == 1,

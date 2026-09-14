@@ -89,7 +89,7 @@ ImU32 canvas_pixel_grid_color(const Settings& s) {
 
 void draw_pixels(ImDrawList* dl, ImVec2 origin, float zoom, int w, int h, const TilesetEditor& ed, int ox, int oy, int cols,
                  int rows, bool atlas, ImU32 grid_col, float grid_thickness = 1.0f, bool pixel_grid = false,
-                 bool canvas_mode = false) {
+                 bool canvas_mode = false, bool tile_grid = true) {
     const int ts = atlas ? ed.atlas.tile_size : ed.doc.tile_size;
     if (ts <= 0 || zoom <= 0.0f) {
         return;
@@ -192,13 +192,15 @@ void draw_pixels(ImDrawList* dl, ImVec2 origin, float zoom, int w, int h, const 
             }
         }
     }
-    for (int row = 0; row <= rows; ++row) {
-        const float y = origin.y + static_cast<float>(row * ts * zoom);
-        dl->AddLine(ImVec2(origin.x, y), ImVec2(origin.x + drawn_w, y), grid_col, grid_thickness);
-    }
-    for (int col = 0; col <= cols; ++col) {
-        const float x = origin.x + static_cast<float>(col * ts * zoom);
-        dl->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + drawn_h), grid_col, grid_thickness);
+    if (tile_grid) {
+        for (int row = 0; row <= rows; ++row) {
+            const float y = origin.y + static_cast<float>(row * ts * zoom);
+            dl->AddLine(ImVec2(origin.x, y), ImVec2(origin.x + drawn_w, y), grid_col, grid_thickness);
+        }
+        for (int col = 0; col <= cols; ++col) {
+            const float x = origin.x + static_cast<float>(col * ts * zoom);
+            dl->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + drawn_h), grid_col, grid_thickness);
+        }
     }
 
     if (canvas_mode && ((!atlas && ed.step == Step::Specialty) || (atlas && ed.step == Step::Variants))) {
@@ -255,6 +257,28 @@ void draw_preview_grid(TilesetEditor& ed, const char* title, int cols, int rows,
                                             IM_COL32(255, 220, 60, 255), 0, 0, 2.0f);
     }
 }
+
+struct ScopedStyleColor {
+    int count = 0;
+    ScopedStyleColor(ImGuiCol idx, const ImVec4& col, bool condition = true) {
+        if (condition) {
+            ImGui::PushStyleColor(idx, col);
+            count = 1;
+            if (idx == ImGuiCol_Button) {
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, col);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, col);
+                count = 3;
+            }
+        }
+    }
+    ~ScopedStyleColor() {
+        if (count > 0) {
+            ImGui::PopStyleColor(count);
+        }
+    }
+    ScopedStyleColor(const ScopedStyleColor&) = delete;
+    ScopedStyleColor& operator=(const ScopedStyleColor&) = delete;
+};
 
 void row_rule() {
     ImGui::Separator();
@@ -646,7 +670,7 @@ void handle_canvas(TilesetEditor& ed) {
             const ImVec2 o(origin.x + static_cast<float>(rx * sw * ed.zoom),
                             origin.y + static_cast<float>(ry * sh * ed.zoom));
             draw_pixels(dl, o, static_cast<float>(ed.zoom), sw, sh, ed, ed.edit_ox, ed.edit_oy, ed.edit_cols, ed.edit_rows, !ed.art_step(),
-                        canvas_tile_grid_color(ed.settings), 2.0f, ed.settings.pixel_grid, /*canvas_mode=*/true);
+                        canvas_tile_grid_color(ed.settings), 2.0f, ed.settings.pixel_grid, /*canvas_mode=*/true, ed.settings.tile_grid);
         }
     }
 
@@ -1794,6 +1818,14 @@ void TilesetEditor::draw_step_header(bool show_return_button) {
         configure_view();
         bump_art();
     }
+    ImGui::SameLine(0, 20);
+    if (ImGui::Checkbox("Pixel grid", &settings.pixel_grid)) {
+        save_settings_file(settings, settings_path());
+    }
+    ImGui::SameLine(0, 12);
+    if (ImGui::Checkbox("Tile grid", &settings.tile_grid)) {
+        save_settings_file(settings, settings_path());
+    }
 
     if (show_return_button) {
         ImGui::SameLine(0, 30);
@@ -1830,8 +1862,21 @@ void TilesetEditor::draw_tools_and_options() {
     }
     if (uses_brush(tool)) {
         ImGui::SameLine(0, 16);
-        ImGui::SetNextItemWidth(120);
-        ImGui::SliderInt("Brush", &brush, 1, 4);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Thickness:");
+        ImGui::SameLine();
+        for (int s = 1; s <= 4; ++s) {
+            ScopedStyleColor bcol(ImGuiCol_Button, ImVec4(0.24f, 0.48f, 0.80f, 1.0f), brush == s);
+            char btn_lbl[32];
+            std::snprintf(btn_lbl, sizeof(btn_lbl), "%d##BrushSz%d", s, s);
+            if (ImGui::Button(btn_lbl, ImVec2(24.0f * settings.scale, 0))) {
+                brush = s;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Brush thickness: %d pixel%s", s, s > 1 ? "s" : "");
+            }
+            ImGui::SameLine();
+        }
     }
     if (step == Step::Center) {
         ImGui::SameLine(0, 16);

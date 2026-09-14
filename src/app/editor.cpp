@@ -275,6 +275,10 @@ int run_editor() {
                     ed.settings.pixel_grid = !ed.settings.pixel_grid;
                     persist_settings(ed.settings);
                 }
+                if (ImGui::MenuItem("Tile grid", nullptr, ed.settings.tile_grid)) {
+                    ed.settings.tile_grid = !ed.settings.tile_grid;
+                    persist_settings(ed.settings);
+                }
                 ImGui::EndMenu();
             }
             ImGui::EndMainMenuBar();

@@ -13,6 +13,7 @@ namespace tsm {
     X(bool, dark, true, Theme, "theme")             \
     X(float, scale, 1.0f, Float, "scale")           \
     X(bool, pixel_grid, true, Bool, "pixel_grid")   \
+    X(bool, tile_grid, true, Bool, "tile_grid")     \
     X(Rgb, tile_grid_color, (Rgb{128, 128, 128}), Color, "tile_grid_color") \
     X(Rgb, pixel_grid_color, (Rgb{104, 104, 104}), Color, "pixel_grid_color") \
     X(int, window_x, 0, Int, "window_x")            \
