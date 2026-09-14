@@ -1765,7 +1765,7 @@ void TilesetEditor::handle_shortcuts(const ImGuiIO& io) {
     }
 }
 
-void TilesetEditor::draw_step_header(bool show_return_button) {
+void TilesetEditor::draw_step_header() {
     ImGui::BeginGroup();
     ImGui::BeginDisabled(step == Step::Center);
     if (ImGui::Button("Back", ImVec2(88, 0))) {
@@ -1828,13 +1828,6 @@ void TilesetEditor::draw_step_header(bool show_return_button) {
         save_settings_file(settings, settings_path());
     }
 
-    if (show_return_button) {
-        ImGui::SameLine(0, 30);
-        if (ImGui::Button("Apply & Return to Map", ImVec2(180, 0))) {
-            request_sync_to_map = true;
-            request_return_to_map = true;
-        }
-    }
     ImGui::EndGroup();
 }
 
@@ -1989,7 +1982,7 @@ void TilesetEditor::draw_content(SDL_Renderer* renderer, SDL_Window* window, flo
     (void)renderer;
     (void)window;
     const float y_start = ImGui::GetCursorPosY();
-    draw_step_header(embedded);
+    draw_step_header();
     row_rule();
     draw_tools_and_options();
     row_rule();

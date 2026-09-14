@@ -144,7 +144,8 @@ public:
     void go_next();
 
     void handle_shortcuts(const ImGuiIO& io);
-    void draw_step_header(bool show_return_button = false);
+    void draw_step_header();
+    void draw_step_header(bool) { draw_step_header(); }
     void draw_tools_and_options();
     void draw_content(SDL_Renderer* renderer, SDL_Window* window, float avail_height = -1.0f);
     void draw_modals(bool& running);
