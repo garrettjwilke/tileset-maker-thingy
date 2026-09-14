@@ -173,7 +173,7 @@ int TilesetDoc::corner_context_pixel(int px, int py, bool* out_is_bg, bool* out_
     const int ly = py % tile_size;
     const int half = tile_size / 2;
 
-    // Checkerboard background for empty corner tiles (0,0), (3,0), (0,3), (3,3)
+    // Empty background for corner tiles (0,0), (3,0), (0,3), (3,3)
     if ((tx == 0 || tx == 3) && (ty == 0 || ty == 3)) {
         if (out_is_bg) *out_is_bg = true;
         return 0;

@@ -94,8 +94,24 @@ void draw_pixels(ImDrawList* dl, ImVec2 origin, float zoom, int w, int h, const 
     if (ts <= 0 || zoom <= 0.0f) {
         return;
     }
-    const ImU32 bg_a = ed.settings.dark ? IM_COL32(31, 33, 41, 255) : IM_COL32(235, 237, 240, 255);
-    const ImU32 bg_b = ed.settings.dark ? IM_COL32(20, 23, 28, 255) : IM_COL32(215, 218, 222, 255);
+    const ImU32 bg_color0 = im_color(atlas ? ed.atlas.color_at(0) : ed.doc.color_at(0));
+
+    auto is_empty_cell = [&](int gx, int gy) -> bool {
+        if (!canvas_mode) return false;
+        if (atlas && ed.step == Step::Variants) {
+            if (gx == 1 && gy == 1) return false;
+            const Cell ctx = ed.atlas.context_cell(ed.atlas_cell, gx, gy);
+            return (ctx.x < 0 || ctx.y < 0);
+        }
+        if (!atlas && ed.step == Step::Specialty) {
+            if (ed.specialty == TilesetDoc::kInnerCorner) {
+                return ((gx == 0 || gx == 2) && (gy == 0 || gy == 2));
+            }
+            const Cell cell = ed.src_to_cell(Cell{gx * ts, gy * ts});
+            return (cell.x < 0 || cell.y < 0);
+        }
+        return false;
+    };
 
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
@@ -109,8 +125,7 @@ void draw_pixels(ImDrawList* dl, ImVec2 origin, float zoom, int w, int h, const 
                 const int ly = y % ts;
                 const Cell ctx = (gx == 1 && gy == 1) ? ed.atlas_cell : ed.atlas.context_cell(ed.atlas_cell, gx, gy);
                 if (ctx.x < 0 || ctx.y < 0) {
-                    const bool checker = (((x / 4) + (y / 4)) % 2 == 0);
-                    dl->AddRectFilled(p0, p1, checker ? bg_a : bg_b);
+                    dl->AddRectFilled(p0, p1, bg_color0);
                 } else {
                     const int idx = ed.atlas.get_pixel(ctx.x, ctx.y, lx, ly);
                     dl->AddRectFilled(p0, p1, im_color(ed.atlas.color_at(idx)));
@@ -132,16 +147,14 @@ void draw_pixels(ImDrawList* dl, ImVec2 origin, float zoom, int w, int h, const 
                         const int idx = ed.atlas.get_pixel(2, 3, lx, ly);
                         dl->AddRectFilled(p0, p1, im_color(ed.atlas.color_at(idx)));
                     } else {
-                        const bool checker = (((x / 4) + (y / 4)) % 2 == 0);
-                        dl->AddRectFilled(p0, p1, checker ? bg_a : bg_b);
+                        dl->AddRectFilled(p0, p1, bg_color0);
                     }
                     continue;
                 }
 
                 const Cell cell = ed.src_to_cell(Cell{x, y});
                 if (cell.x < 0 || cell.y < 0) {
-                    const bool checker = (((x / 4) + (y / 4)) % 2 == 0);
-                    dl->AddRectFilled(p0, p1, checker ? bg_a : bg_b);
+                    dl->AddRectFilled(p0, p1, bg_color0);
                     continue;
                 }
                 const Cell loc = ed.src_local(Cell{x, y});
@@ -163,15 +176,20 @@ void draw_pixels(ImDrawList* dl, ImVec2 origin, float zoom, int w, int h, const 
     const float drawn_h = static_cast<float>(h * zoom);
     if (pixel_grid && zoom >= 3) {
         const ImU32 pixel_col = canvas_pixel_grid_color(ed.settings);
-        for (int y = 1; y < h; ++y) {
-            if (y % ts == 0) continue;
-            const float py = origin.y + static_cast<float>(y * zoom);
-            dl->AddLine(ImVec2(origin.x, py), ImVec2(origin.x + drawn_w, py), pixel_col);
-        }
-        for (int x = 1; x < w; ++x) {
-            if (x % ts == 0) continue;
-            const float px = origin.x + static_cast<float>(x * zoom);
-            dl->AddLine(ImVec2(px, origin.y), ImVec2(px, origin.y + drawn_h), pixel_col);
+        for (int gy = 0; gy < rows; ++gy) {
+            for (int gx = 0; gx < cols; ++gx) {
+                if (is_empty_cell(gx, gy)) continue;
+                const float cell_x = origin.x + static_cast<float>(gx * ts * zoom);
+                const float cell_y = origin.y + static_cast<float>(gy * ts * zoom);
+                for (int py = 1; py < ts; ++py) {
+                    const float y = cell_y + static_cast<float>(py * zoom);
+                    dl->AddLine(ImVec2(cell_x, y), ImVec2(cell_x + static_cast<float>(ts * zoom), y), pixel_col);
+                }
+                for (int px = 1; px < ts; ++px) {
+                    const float x = cell_x + static_cast<float>(px * zoom);
+                    dl->AddLine(ImVec2(x, cell_y), ImVec2(x, cell_y + static_cast<float>(ts * zoom)), pixel_col);
+                }
+            }
         }
     }
     for (int row = 0; row <= rows; ++row) {
@@ -458,24 +476,14 @@ void draw_rectangular_color_picker(TilesetEditor& ed, int n) {
         Rgb next = MdColor::quantize(Rgb{static_cast<uint8_t>(nr * 255.0f + 0.5f),
                                          static_cast<uint8_t>(ng * 255.0f + 0.5f),
                                          static_cast<uint8_t>(nb * 255.0f + 0.5f)});
-        if (ed.paint_index == 0) {
-            next = Rgb{0, 0, 0};
-        }
         ed.picker_last_rgb = next;
-        for (int i = 1; i < n; ++i) {
+        for (int i = 0; i < n; ++i) {
             if (ed.is_palette_selected(i)) {
                 if (ed.art_step()) {
                     ed.doc.set_palette_color(i, next);
                 } else {
                     ed.atlas.set_palette_color(i, next);
                 }
-            }
-        }
-        if (ed.paint_index == 0) {
-            if (ed.art_step()) {
-                ed.doc.set_palette_color(0, Rgb{0, 0, 0});
-            } else {
-                ed.atlas.set_palette_color(0, Rgb{0, 0, 0});
             }
         }
         ed.bump_art();
@@ -631,6 +639,8 @@ void handle_canvas(TilesetEditor& ed) {
                         cursor.y + std::max(0.0f, (avail.y - drawn_h) * 0.5f));
     ImGui::InvisibleButton("canvas", ImVec2(std::max(1.0f, avail.x), std::max(1.0f, avail.y)));
     ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 bg_color0 = im_color(ed.color(0));
+    dl->AddRectFilled(cursor, ImVec2(cursor.x + std::max(1.0f, avail.x), cursor.y + std::max(1.0f, avail.y)), bg_color0);
     for (int ry = 0; ry < reps; ++ry) {
         for (int rx = 0; rx < reps; ++rx) {
             const ImVec2 o(origin.x + static_cast<float>(rx * sw * ed.zoom),
@@ -725,8 +735,8 @@ void handle_canvas(TilesetEditor& ed) {
             }
         }
 
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && ed.hover.x >= 0) {
-            const int px = ed.sample_hover_pixel(ed.hover);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+            const int px = (ed.hover.x >= 0) ? ed.sample_hover_pixel(ed.hover) : 0;
             if (px >= 0) ed.select_single_palette(px);
         }
 
@@ -757,20 +767,22 @@ void handle_canvas(TilesetEditor& ed) {
                 ed.stroke_to = ed.hover;
                 ed.stroke_pending = true;
             } else if (ed.tool == Tool::Eyedropper) {
-                const int px = ed.sample_hover_pixel(ed.hover);
+                const int px = (ed.hover.x >= 0) ? ed.sample_hover_pixel(ed.hover) : 0;
                 if (px >= 0) ed.select_single_palette(px);
             } else if (ed.tool == Tool::Fill) {
                 if (!ed.has_selection()) {
-                    const Cell cell = ed.src_to_cell(ed.hover);
-                    if (ed.in_doc(cell.x, cell.y)) {
-                        const Cell loc = ed.src_local(ed.hover);
-                        ed.push_undo();
-                        if (ed.art_step()) {
-                            ed.doc.flood_fill(cell.x, cell.y, loc.x, loc.y, ed.paint_index);
-                        } else {
-                            ed.atlas.flood_fill(cell.x, cell.y, loc.x, loc.y, ed.paint_index);
+                    if (ed.can_stamp(ed.hover)) {
+                        const Cell cell = ed.src_to_cell(ed.hover);
+                        if (ed.in_doc(cell.x, cell.y)) {
+                            const Cell loc = ed.src_local(ed.hover);
+                            ed.push_undo();
+                            if (ed.art_step()) {
+                                ed.doc.flood_fill(cell.x, cell.y, loc.x, loc.y, ed.paint_index);
+                            } else {
+                                ed.atlas.flood_fill(cell.x, cell.y, loc.x, loc.y, ed.paint_index);
+                            }
+                            ed.bump_art();
                         }
-                        ed.bump_art();
                     }
                 } else if (ed.in_selection(ed.hover)) {
                     const Cell start_cell = ed.src_to_cell(ed.hover);
@@ -974,10 +986,13 @@ void draw_split_layout(TilesetEditor& ed, float avail_h) {
     ed.sidebar_w = side;
     const float canvas_w = std::max(1.0f, avail_x - side - splitter);
 
+    const ImVec4 canvas_bg = ImGui::ColorConvertU32ToFloat4(im_color(ed.color(0)));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, canvas_bg);
     ImGui::BeginChild("canvas_panel", ImVec2(canvas_w, avail_y), ImGuiChildFlags_Borders,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     handle_canvas(ed);
     ImGui::EndChild();
+    ImGui::PopStyleColor();
     ImGui::SameLine(0, 0);
     ImGui::InvisibleButton("vsplit", ImVec2(splitter, avail_y));
     if (ImGui::IsItemActive()) {
@@ -1625,7 +1640,7 @@ bool TilesetEditor::stamp_src(Cell src, int idx) {
     return drawn;
 }
 int TilesetEditor::sample_hover_pixel(Cell src) const {
-    if (src.x < 0 || src.y < 0) return -1;
+    if (src.x < 0 || src.y < 0) return 0;
     const Cell loc = src_local(src);
     if (step == Step::Variants) {
         const int ts = tile_size();
@@ -1633,10 +1648,24 @@ int TilesetEditor::sample_hover_pixel(Cell src) const {
         const int gy = src.y / ts;
         const Cell ctx = (gx == 1 && gy == 1) ? atlas_cell : atlas.context_cell(atlas_cell, gx, gy);
         if (ctx.x >= 0 && ctx.y >= 0) return atlas.get_pixel(ctx.x, ctx.y, loc.x, loc.y);
-        return -1;
+        return 0;
+    }
+    if (step == Step::Specialty && specialty == TilesetDoc::kInnerCorner) {
+        const int ts = tile_size();
+        const int gx = src.x / ts;
+        const int gy = src.y / ts;
+        if (gx == 1 && gy == 1) {
+            return doc.get_pixel(TilesetDoc::kInnerCorner.x, TilesetDoc::kInnerCorner.y, loc.x, loc.y);
+        } else if ((gx == 1 && gy == 0) || (gx == 1 && gy == 2)) {
+            return atlas.get_pixel(0, 1, loc.x, loc.y);
+        } else if ((gx == 0 && gy == 1) || (gx == 2 && gy == 1)) {
+            return atlas.get_pixel(2, 3, loc.x, loc.y);
+        } else {
+            return 0;
+        }
     }
     const Cell cell = src_to_cell(src);
-    if (!in_doc(cell.x, cell.y)) return -1;
+    if (!in_doc(cell.x, cell.y)) return 0;
     return get_px(cell.x, cell.y, loc.x, loc.y);
 }
 bool TilesetEditor::plot_src(Cell src, int idx) {
