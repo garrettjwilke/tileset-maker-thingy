@@ -333,18 +333,21 @@ bool TilesetDoc::uses_index_at_or_above(int min_index) const {
     return false;
 }
 
-bool TilesetDoc::grow_palette() {
+bool TilesetDoc::grow_palette(Rgb color) {
     if (static_cast<int>(palette.size()) >= kPaletteSize) {
         return false;
     }
+    palette.push_back(color);
+    return true;
+}
+
+bool TilesetDoc::grow_palette() {
     const auto defaults = default_palette();
     const int i = static_cast<int>(palette.size());
     if (i < static_cast<int>(defaults.size())) {
-        palette.push_back(defaults[static_cast<size_t>(i)]);
-    } else {
-        palette.push_back(palette.back());
+        return grow_palette(defaults[static_cast<size_t>(i)]);
     }
-    return true;
+    return grow_palette(palette.empty() ? Rgb{0, 0, 0} : palette.back());
 }
 
 void TilesetDoc::set_palette_size(int new_size) {

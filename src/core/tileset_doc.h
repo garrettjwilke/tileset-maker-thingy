@@ -68,6 +68,7 @@ public:
     std::set<int> used_index_set() const;
     bool uses_index_at_or_above(int min_index) const;
     bool grow_palette();
+    bool grow_palette(Rgb color);
     void set_palette_size(int new_size);
     void apply_shrink_remap(int new_size, int replacement);
     bool replace_index(int from_index, int to_index);

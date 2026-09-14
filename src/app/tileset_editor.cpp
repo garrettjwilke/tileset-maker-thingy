@@ -550,11 +550,24 @@ void draw_palette(TilesetEditor& ed) {
         }
         ImGui::EndCombo();
     }
+    const bool can_add = (ed.art_step() ? ed.doc.palette_count() : ed.atlas.palette_count()) < TilesetDoc::kPaletteSize;
+    if (!can_add) ImGui::BeginDisabled();
     if (ImGui::Button("Add Color")) {
-        if (ed.art_step()) ed.doc.grow_palette();
-        else ed.atlas.grow_palette();
-        ed.touch();
+        const int count = ed.art_step() ? ed.doc.palette_count() : ed.atlas.palette_count();
+        if (count < TilesetDoc::kPaletteSize) {
+            ed.push_undo();
+            const int src_idx = std::clamp(ed.paint_index, 0, count - 1);
+            const Rgb copy_c = ed.color(src_idx);
+            const bool grown = ed.art_step() ? ed.doc.grow_palette(copy_c) : ed.atlas.grow_palette(copy_c);
+            if (grown) {
+                const int new_idx = (ed.art_step() ? ed.doc.palette_count() : ed.atlas.palette_count()) - 1;
+                ed.select_single_palette(new_idx);
+                ed.touch();
+                ed.bump_art();
+            }
+        }
     }
+    if (!can_add) ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Remove Unused Colors")) {
         ed.push_undo();
@@ -1647,6 +1660,9 @@ void TilesetEditor::do_undo() {
         undo_selections.pop_back();
     } else {
         clear_selection();
+    }
+    if (paint_index > last_index()) {
+        select_single_palette(std::max(0, last_index()));
     }
     bump_art();
 }

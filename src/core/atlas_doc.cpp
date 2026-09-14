@@ -264,14 +264,21 @@ void AtlasDoc::apply_palette(const std::vector<Rgb>& colors) {
     }
 }
 
-bool AtlasDoc::grow_palette() {
+bool AtlasDoc::grow_palette(Rgb color) {
     if (static_cast<int>(palette.size()) >= kPaletteSize) {
         return false;
     }
+    palette.push_back(color);
+    return true;
+}
+
+bool AtlasDoc::grow_palette() {
     const auto defaults = TilesetDoc::default_palette();
     const int i = static_cast<int>(palette.size());
-    palette.push_back(i < static_cast<int>(defaults.size()) ? defaults[static_cast<size_t>(i)] : palette.back());
-    return true;
+    if (i < static_cast<int>(defaults.size())) {
+        return grow_palette(defaults[static_cast<size_t>(i)]);
+    }
+    return grow_palette(palette.empty() ? Rgb{0, 0, 0} : palette.back());
 }
 
 void AtlasDoc::set_palette_size(int new_size) {

@@ -57,6 +57,7 @@ public:
     void apply_palette(const std::vector<Rgb>& colors);
 
     bool grow_palette();
+    bool grow_palette(Rgb color);
     void set_palette_size(int new_size);
     void apply_shrink_remap(int new_size, int replacement);
     bool replace_index(int from_index, int to_index);

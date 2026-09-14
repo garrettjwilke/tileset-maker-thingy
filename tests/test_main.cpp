@@ -150,6 +150,31 @@ void test_palette() {
     const auto loaded = palette_from_text(text);
     expect(loaded.error.empty(), "palette io error");
     expect(loaded.colors.size() == meadow.size() && loaded.colors[1] == meadow[1], "palette io round-trip failed");
+
+    // Test grow_palette with specific color
+    TilesetDoc grow_doc(8);
+    grow_doc.set_palette_size(4);
+    expect(grow_doc.palette_count() == 4, "expected 4 colors");
+    const Rgb custom_col{128, 64, 32};
+    expect(grow_doc.grow_palette(custom_col), "grow_palette should succeed");
+    expect(grow_doc.palette_count() == 5, "palette count should be 5");
+    expect(grow_doc.color_at(4) == custom_col, "appended color mismatch");
+
+    // Test filling up to 16
+    while (grow_doc.palette_count() < TilesetDoc::kPaletteSize) {
+        expect(grow_doc.grow_palette(custom_col), "grow_palette up to 16 should succeed");
+    }
+    expect(grow_doc.palette_count() == TilesetDoc::kPaletteSize, "should be at kPaletteSize");
+    expect(!grow_doc.grow_palette(custom_col), "grow_palette beyond kPaletteSize should fail");
+    expect(!grow_doc.grow_palette(), "grow_palette default beyond kPaletteSize should fail");
+
+    // Test AtlasDoc grow_palette
+    AtlasDoc atlas_doc;
+    atlas_doc.set_palette_size(4);
+    expect(atlas_doc.palette_count() == 4, "atlas expected 4 colors");
+    expect(atlas_doc.grow_palette(custom_col), "atlas grow_palette should succeed");
+    expect(atlas_doc.palette_count() == 5, "atlas palette count should be 5");
+    expect(atlas_doc.color_at(4) == custom_col, "atlas appended color mismatch");
 }
 
 void test_pipeline_and_export() {
